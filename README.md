@@ -6,21 +6,19 @@ story _and_ riffs on it. Works on full-length **movies** (a ~10–12 min funny r
 short **clips** like vlogs (a 1–3 min riff). English (YouTube-style) commentary is supported too.
 
 🔗 **[Live demo → yapper.yuchia.dev](https://yapper.yuchia.dev)** &nbsp;·&nbsp;
-📊 **[Grafana dashboard](https://grafana.yuchia.dev/d/yapper-overview/yapper-c2b7-overview?orgId=1&from=now-24h&to=now&timezone=America%2FLos_Angeles&var-datasource=prometheus&refresh=auto)** &nbsp;·&nbsp;
-💻 **[Source](https://github.com/yuchia329/movie_narrative)**
+📊 **[Grafana dashboard](https://grafana.yuchia.dev/d/yapper-overview/yapper-c2b7-overview?orgId=1&from=now-24h&to=now&timezone=America%2FLos_Angeles&var-datasource=prometheus&refresh=auto)**
 
 ---
 
 ## Demo
 
-▶ **[Try it live at yapper.yuchia.dev](https://yapper.yuchia.dev)** — upload a clip, pick a
-language, and watch the pipeline run end to end (no sign-in).
-
-<!-- Demo video: replace VIDEO_ID with the YouTube id (the SAME one as DEMO_YT_ID in
-     yapper_web/static/index.html), then uncomment the line below. GitHub READMEs can't embed a
-     playable iframe, so the convention is a thumbnail that links to the video:
-[![Watch a sample Yapper recap on YouTube](https://img.youtube.com/vi/VIDEO_ID/maxresdefault.jpg)](https://www.youtube.com/watch?v=VIDEO_ID)
--->
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=LF0VHx4xo_8&t=311s">
+    <img src="https://img.youtube.com/vi/LF0VHx4xo_8/maxresdefault.jpg" width="640" alt="Watch a sample Yapper recap on YouTube">
+  </a>
+  <br>
+  <em>▶ Watch a sample recap on YouTube</em>
+</p>
 
 ---
 
@@ -41,23 +39,29 @@ video ─▶ probe ─▶ extract audio ─▶ ASR ─▶ detect shots ─▶ sc
             └─────────────────────────────────────────────────────────────────┘
 ```
 
-| # | Stage | What it does | Compute |
-|---|-------|--------------|---------|
-| 1 | `ingest` (probe) | ffprobe dims/rotation/duration → `probe.json` | CPU |
-| 2 | `audio` | extract a mono track for ASR | CPU |
-| 3 | `asr` | transcribe with **WhisperX** (word timings) | **GPU** |
-| 4 | `shots` | shot-boundary detection (PySceneDetect) | CPU |
-| 5 | `scenes` | group shots → scenes, pick keyframes, build the **clip_index** | CPU |
-| 6 | `understand` (MAP) | LLM reads transcript + keyframes → beat sheet | **LLM** |
-| 7 | `script` (REDUCE) | LLM writes the 解說 narration grounded to `clip_ref`s | **LLM** |
-| 8 | `budget` | fit the script to the target runtime (spoken-rate model) | CPU |
-| 9 | `tts` | synthesize the voiceover with a **cloned voice** (CosyVoice2/IndexTTS2) | **GPU** |
-| 10 | `edl` | build an audio-driven edit decision list | CPU |
-| 11 | `subs` | timed, width-fit subtitle pieces (ASS) | CPU |
-| 12 | `render` | ffmpeg: conform footage to the VO, burn subs, mix score bed | CPU |
+| #   | Stage              | What it does                                                            | Compute |
+| --- | ------------------ | ----------------------------------------------------------------------- | ------- |
+| 1   | `ingest` (probe)   | ffprobe dims/rotation/duration → `probe.json`                           | CPU     |
+| 2   | `audio`            | extract a mono track for ASR                                            | CPU     |
+| 3   | `asr`              | transcribe with **WhisperX** (word timings)                             | **GPU** |
+| 4   | `shots`            | shot-boundary detection (PySceneDetect)                                 | CPU     |
+| 5   | `scenes`           | group shots → scenes, pick keyframes, build the **clip_index**          | CPU     |
+| 6   | `understand` (MAP) | LLM reads transcript + keyframes → beat sheet                           | **LLM** |
+| 7   | `script` (REDUCE)  | LLM writes the 解說 narration grounded to `clip_ref`s                   | **LLM** |
+| 8   | `budget`           | fit the script to the target runtime (spoken-rate model)                | CPU     |
+| 9   | `tts`              | synthesize the voiceover with a **cloned voice** (CosyVoice2/IndexTTS2) | **GPU** |
+| 10  | `edl`              | build an audio-driven edit decision list                                | CPU     |
+| 11  | `subs`             | timed, width-fit subtitle pieces (ASS)                                  | CPU     |
+| 12  | `render`           | ffmpeg: conform footage to the VO, burn subs, mix score bed             | CPU     |
 
 Output preserves the source aspect ratio (portrait stays portrait, longest side capped at 1080)
 and plays the film's own score/SFX as a bed under the narration (dialogue stripped via Demucs).
+
+<p align="center">
+  <img src="docs/home-pipeline.png" width="760" alt="Yapper web UI showing the 12-stage pipeline running on a video, with per-stage timings and CPU/GPU/LLM color-coded tracks">
+  <br>
+  <em>The web UI — every upload runs the 12 stages with live per-stage timings; colors mark CPU / GPU / LLM work.</em>
+</p>
 
 ### The load-bearing idea: `clip_ref` grounding
 
