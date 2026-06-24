@@ -1,0 +1,10 @@
+apiVersion: 1
+providers:
+  - name: jieshuo
+    orgId: 1
+    folder: 解说
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

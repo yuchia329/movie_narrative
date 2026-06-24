@@ -50,10 +50,19 @@ command -v uv >/dev/null && ok "uv: $(uv --version)" || bad "uv not found"
 
 echo "== secrets / services =="
 [ -n "${LLM_API_KEY:-}" ] && ok "LLM_API_KEY set (script brain)" || warn "LLM_API_KEY not set (needed for script generation)"
-for var in ASR_SERVER_URL TTS_SERVER_URL; do
-  url="${!var:-}"
-  if [ -z "$url" ]; then warn "$var not set"; continue; fi
-  if curl -fsS --max-time 4 "$url/health" >/dev/null 2>&1; then ok "$var reachable ($url)"; else bad "$var unreachable ($url)"; fi
+# gRPC targets (host:port). Probe a TCP connect; use grpcurl for a real health check if present.
+for var in ASR_GRPC_TARGET TTS_GRPC_TARGET; do
+  target="${!var:-}"
+  if [ -z "$target" ]; then warn "$var not set"; continue; fi
+  host="${target%%:*}"; port="${target##*:}"
+  if command -v grpcurl >/dev/null 2>&1; then
+    if grpcurl -plaintext -max-time 4 "$target" grpc.health.v1.Health/Check >/dev/null 2>&1; then
+      ok "$var serving ($target)"; else bad "$var not serving ($target)"; fi
+  elif (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null; then
+    ok "$var TCP reachable ($target) — install grpcurl for a real health check"
+  else
+    bad "$var unreachable ($target)"
+  fi
 done
 
 echo "done."

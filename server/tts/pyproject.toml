@@ -1,0 +1,34 @@
+# uv-managed environment for the TTS (CosyVoice2) service.
+#   cd ~/jieshuo/server/tts && uv sync
+#   # CosyVoice2 is a SOURCE install — add its (large, pinned) deps into THIS env:
+#   uv pip install --python ~/jieshuo/server/tts/.venv/bin/python -r ~/jieshuo/CosyVoice/requirements.txt
+#   uv run --no-sync --project ~/jieshuo/server/tts python ~/jieshuo/server/tts_service.py
+#
+# Kept separate from the ASR env on purpose: their torch/dependency pins conflict. Only
+# our small runtime deps are declared here; torch/torchaudio/etc. come from CosyVoice's
+# requirements (so we don't fight its pins).
+[project]
+name = "jieshuo-tts-env"
+version = "0"
+requires-python = ">=3.10"
+dependencies = [
+    # Pinned to CosyVoice's grpc world. CosyVoice's requirements hard-pin grpcio==1.57.0 +
+    # protobuf==4.25 but NOT grpcio-health-checking, so a bare `>=` leaves it at a modern
+    # version whose health_pb2 is generated for protobuf>=5.27 (it imports
+    # `google.protobuf.runtime_version`) and fails to import under protobuf 4.25. Match 1.57.0
+    # so the bundled health stubs are protobuf-4.x gencode. (The ASR env is independent and
+    # stays on modern grpc/protobuf.)
+    "grpcio==1.57.0",
+    "grpcio-health-checking==1.57.0",
+    "protobuf>=4.25,<5",
+    "prometheus-client>=0.20",
+    "soundfile>=0.12",
+    # CosyVoice's lightning==2.2.4 calls pkg_resources.declare_namespace() at import, but
+    # setuptools>=81 REMOVED pkg_resources. CosyVoice's reqs don't pin setuptools, so uv pulls
+    # the latest -> import crash. Cap it. (setup_gpu.sh also re-pins this AFTER the CosyVoice
+    # install, which otherwise bumps setuptools back up.)
+    "setuptools<81",
+]
+
+[tool.uv]
+package = false

@@ -1,0 +1,18 @@
+# The GPU box is reachable ONLY via SSH tunnel/port-forwarding (no routed IP), so each
+# worker that needs ASR/TTS runs an **autossh sidecar** forwarding the box's gpud +
+# instance-port range to the pod's localhost. The worker then dials localhost:<port>
+# (gpud hands back a port from the range). The sidecar is added to worker-asr/worker-tts
+# by the prod overlay (see overlays/prod/patch-gpu-sidecar.yaml).
+#
+# This Secret holds the SSH key + known_hosts the sidecar uses. Replace before applying
+# (or wire to external-secrets / a CSI driver). Harmless/unused where the sidecar isn't added.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gpu-ssh-key
+type: Opaque
+stringData:
+  id_ed25519: "REPLACE_WITH_PRIVATE_KEY"
+  known_hosts: "REPLACE_WITH_KNOWN_HOSTS"
+  ssh_host: "nlp"            # box host/alias the tunnel connects to
+  ssh_user: "ychan137"

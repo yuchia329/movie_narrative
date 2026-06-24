@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jieshuo-config
+data:
+  # Storage: object store everywhere (MinIO local / AWS S3 prod). Endpoint overrides
+  # are added by the overlays (S3_ENDPOINT_URL / S3_PUBLIC_ENDPOINT_URL).
+  STORAGE_BACKEND: "s3"
+  S3_BUCKET: "jieshuo-artifacts"
+  AWS_REGION: "us-east-1"
+  # Infra (in-cluster service DNS)
+  REDIS_URL: "redis://redis:6379/0"
+  WORK_ROOT: "/scratch/work"
+  PIPELINE_CONFIG: "/app/config/pipeline.toml"
+  PUSHGATEWAY_URL: "http://pushgateway:9091"
+  # GPU box gRPC services, reached via an autossh sidecar that forwards the box's ports to
+  # the pod's localhost (the box is SSH-tunnel-only). gpud (on-demand pools) is enabled in
+  # the prod overlay via GPU_SUPERVISOR_TARGET; these statics are the always-on fallback.
+  ASR_GRPC_TARGET: "localhost:50051"
+  TTS_GRPC_TARGET: "localhost:50052"
+  # LLM + $ cap
+  LLM_BASE_URL: "https://api.minimax.io/v1"
+  LLM_MODEL: "MiniMax-M3"
+  LLM_MAX_COST_USD: "3.0"
+  LLM_PRICE_IN_PER_1K: "0.0003"
+  LLM_PRICE_OUT_PER_1K: "0.0011"
+  # Sessions + quotas (overlay sets COOKIE_SECURE)
+  SESSION_MAX_AGE: "31536000"
+  MAX_MOVIES_PER_SESSION: "0"   # 0 = unlimited (no per-session movie cap)
+  MAX_CONCURRENT_RUNS: "2"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jieshuo-secrets
+type: Opaque
+stringData:
+  # REPLACE these before applying (or wire to a secrets manager / sealed-secrets / IRSA).
+  LLM_API_KEY: "REPLACE_ME"
+  SESSION_SECRET: "REPLACE_ME_LONG_RANDOM"
+  POSTGRES_PASSWORD: "jieshuo"
+  DATABASE_URL: "postgresql+psycopg://jieshuo:jieshuo@postgres:5432/jieshuo"
+  # AWS keys only if not using an IRSA role (prod) — leave blank for MinIO (uses configmap-injected keys).
+  AWS_ACCESS_KEY_ID: ""
+  AWS_SECRET_ACCESS_KEY: ""

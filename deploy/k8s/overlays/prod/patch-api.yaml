@@ -1,0 +1,14 @@
+# Single API replica, right-sized for the shared 2 vCPU / 8 GB box (no HPA — no
+# metrics-server, and no headroom). Cloudflare fronts it, so one replica is plenty.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: api}
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: api
+          resources:
+            requests: {cpu: "100m", memory: "192Mi"}
+            limits: {cpu: "1", memory: "640Mi"}

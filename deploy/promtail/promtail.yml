@@ -1,0 +1,39 @@
+# Promtail config to ship the platform's JSON logs to Loki. The API + workers log one
+# JSON object per line (see jieshuoforge_web/logging_config.py) with run_id/session_id/
+# stage/lang fields, so Grafana can pivot from a run straight to its logs.
+#
+# Point `clients.url` at your existing Loki. This tails Docker container stdout.
+server:
+  http_listen_port: 9080
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: jieshuo-containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 10s
+    relabel_configs:
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/(.*)"
+        target_label: container
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_service"]
+        target_label: service
+    pipeline_stages:
+      # Parse our JSON logs and promote correlation fields to Loki labels.
+      - json:
+          expressions:
+            level: level
+            run_id: run_id
+            session_id: session_id
+            stage: stage
+            lang: lang
+      - labels:
+          level:
+          run_id:
+          stage:
+          lang:

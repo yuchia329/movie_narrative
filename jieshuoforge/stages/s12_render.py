@@ -1,21 +1,22 @@
 """Stage 12 — assemble & render.
 
-Normalize each EDL segment to the canonical profile, concat them, then (if an ASS
-subtitle file is supplied and the ffmpeg build supports it) burn in subtitles.
-Subtitle burn-in needs an ffmpeg compiled with libass; if absent we render without
-subs and warn rather than fail, so the MVP still produces a watchable video.
+Normalize each EDL segment to the canonical profile — burning that segment's one
+subtitle cue in DURING this same pass — then stream-copy concat to the final video.
+Folding subtitles into the per-segment encode avoids a second full-length re-encode
+(roughly halving render CPU). Burn-in needs an ffmpeg compiled with libass; if absent
+we render without subs and warn rather than fail, so we still produce a watchable video.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import shutil
 from pathlib import Path
 
 from ..ffmpeg import graph
 from ..ffmpeg.run import has_filter, run
 from ..schemas import Edl
+from . import s11_subs
 
 log = logging.getLogger("jieshuoforge.s12")
 
@@ -39,7 +40,7 @@ def run_stage(
     out_path: str | Path,
     render_cfg: dict,
     ducking_cfg: dict,
-    ass_path: str | Path | None = None,
+    subtitle_style: dict | None = None,
     fonts_dir: str | Path | None = None,
     score_stem: str | None = None,
     bed_gain_db: float = -14.0,
@@ -49,33 +50,40 @@ def run_stage(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Build one .ass per segment (text spanning its local [0, screen_duration]) to burn in
+    # during the per-segment encode — no separate full-length burn pass. ``subtitle_style``
+    # is the [subtitles] style dict (font_name/font_size/margin_v); None = no subtitles.
+    seg_ass: dict[str, Path] = {}
+    want_subs = subtitle_style is not None
+    if want_subs and not has_filter("subtitles"):
+        log.warning("ffmpeg has no 'subtitles' filter (libass missing) — rendering WITHOUT subtitles")
+        want_subs = False
+    if want_subs:
+        subs_dir = scratch_dir / "subs"
+        for seg in edl.segments:
+            p = s11_subs.build_segment_ass(
+                seg.subtitle_text, seg.screen_duration, subs_dir / f"{seg.segment_id}.ass",
+                width=render_cfg["width"], height=render_cfg["height"], **subtitle_style,
+            )
+            if p is not None:
+                seg_ass[seg.segment_id] = p
+
     workers = _resolve_workers(render_cfg)
     log.info(
-        "rendering %d segments to %s%s (workers=%d)",
-        len(edl.segments), scratch_dir, " (score bed)" if score_stem else "", workers,
+        "rendering %d segments to %s%s (workers=%d, subs=%s)",
+        len(edl.segments), scratch_dir, " (score bed)" if score_stem else "", workers, bool(seg_ass),
     )
     seg_paths = graph.render_segments(
         movie_path, edl, scratch_dir, render_cfg=render_cfg, ducking_cfg=ducking_cfg,
         score_stem=score_stem, bed_gain_db=bed_gain_db, workers=workers,
+        seg_ass=seg_ass, fonts_dir=Path(fonts_dir) if fonts_dir else None,
     )
 
+    # Subtitles are already burned into each segment, so the concat IS the final. Video is
+    # stream-copied; audio is re-encoded continuously to avoid per-segment AAC priming clicks
+    # at the boundaries.
     list_file = graph.write_concat_list(seg_paths, scratch_dir / "concat.txt")
-    concat_out = scratch_dir / "concat.mp4"
-    run(graph.concat_cmd(list_file, concat_out))
-
-    if ass_path is not None and has_filter("subtitles"):
-        log.info("burning subtitles from %s", ass_path)
-        run(
-            graph.burn_subs_cmd(
-                concat_out, Path(ass_path), out_path,
-                fonts_dir=Path(fonts_dir) if fonts_dir else None,
-                vcodec=render_cfg["vcodec"], pix_fmt=render_cfg["pix_fmt"],
-            )
-        )
-    else:
-        if ass_path is not None:
-            log.warning("ffmpeg has no 'subtitles' filter (libass missing) — rendering WITHOUT subtitles")
-        shutil.move(str(concat_out), str(out_path))
+    run(graph.concat_cmd(list_file, out_path, audio_rate=int(render_cfg["audio_rate"])))
 
     log.info("wrote %s", out_path)
     return out_path

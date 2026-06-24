@@ -1,22 +1,30 @@
-"""Prompts for the MAP (plot understanding) and REDUCE (解说 script) passes.
+"""Prompts for the MAP (plot understanding) and REDUCE (narration) passes.
 
 Written as a descriptive style guide with examples rather than imperative
 "CRITICAL: YOU MUST" language — the model follows instructions literally and
-over-prescriptive prompts reduce output quality. The narration is always Mandarin
-even when the source film is English; the model translates and retells.
+over-prescriptive prompts reduce output quality.
 
-The load-bearing rule, stated plainly: the model only ever references footage by
-its clip_id (e.g. clip_0042) — it never writes timestamps. Code resolves the real
-times from the SQLite index.
+The narration language is selectable (``lang``): "zh" produces Mandarin 抖音/快手
+解说; "en" produces an English YouTube-style movie recap. The source film can be in
+any language — the model translates and retells in the target language.
+
+The load-bearing rule, stated plainly in every variant: the model only ever
+references footage by its clip_id (e.g. clip_0042) — it never writes timestamps.
+Code resolves the real times from the SQLite index.
 
 Two pacing levers are baked into the style guide and the schema:
   - importance (1-5): spend words on what matters, skim low-stakes exposition.
   - kind=playback: at signature moments, hand off to the original clip (full
     original audio, no voiceover) instead of narrating over it.
 
-Few-shot 风格示范 examples (real human 解说, transcribed from reference videos) are
-loaded from data/refs/fewshot.txt when present and injected into the system text —
-this is what pulls the tone away from "AI narration" toward a real storyteller.
+Few-shot examples (real human narration, transcribed from reference videos) are
+loaded per language from data/refs/fewshot.<lang>.txt (or fewshot.txt for zh) when
+present and injected into the system text — this is what pulls the tone away from
+"AI narration" toward a real storyteller.
+
+These strings are consumed by str.format(); the ONLY curly braces in any variant
+are the placeholders {target_sec} (MAP + REDUCE) and {platform}/{structure}
+(REDUCE).
 """
 
 from __future__ import annotations
@@ -24,11 +32,15 @@ from __future__ import annotations
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_FEWSHOT_FILE = _REPO_ROOT / "data" / "refs" / "fewshot.txt"
+_REFS_DIR = _REPO_ROOT / "data" / "refs"
+
+DEFAULT_LANG = "zh"
+SUPPORTED_LANGS = ("zh", "en")
 
 
-# Shared framing — stable across both passes so the cached prefix is reused.
-SYSTEM_STYLE = """\
+# === Mandarin (抖音/快手 电影解说) =========================================
+
+SYSTEM_STYLE_ZH = """\
 你是一位资深的电影解说作者，为抖音/快手平台创作中文电影解说短视频脚本。
 
 【你拿到的资料】
@@ -65,29 +77,7 @@ SYSTEM_STYLE = """\
 你只能用 clip_id（如 clip_0042）来指代要展示的画面，绝不要自己写时间戳；具体时间由程序\
 根据 clip_id 查出。"""
 
-
-def _fewshot_block() -> str:
-    """Real 解说 excerpts to imitate the tone of, if available (transcribed from
-    the reference videos into data/refs/fewshot.txt). Empty if the file is absent."""
-    try:
-        text = _FEWSHOT_FILE.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
-    if not text:
-        return ""
-    return (
-        "\n\n【风格示范】（这是真人解说的片段，只模仿它的语气、节奏和讲法，不要照抄内容）\n"
-        + text
-    )
-
-
-def build_system_text() -> str:
-    """System message for both passes: the style guide plus any few-shot examples."""
-    return SYSTEM_STYLE + _fewshot_block()
-
-
-# MAP pass — produce the condensed plot skeleton (a beat sheet).
-MAP_INSTRUCTION = """\
+MAP_INSTRUCTION_ZH = """\
 请通读以上全部场景资料，理解整部电影的剧情，然后输出一个"剧情骨架"（beat sheet）：
 
 - logline: 一句话钩子，概括整部解说最大的看点。
@@ -108,8 +98,7 @@ MAP_INSTRUCTION = """\
 - 必须一直覆盖到结局（高潮如何收场），不要在中途停住。
 - 总解说时长目标约 {target_sec} 秒，请安排足够多的节点把这个时长填满。"""
 
-# REDUCE pass — write the actual narration over the beat sheet.
-REDUCE_INSTRUCTION = """\
+REDUCE_INSTRUCTION_ZH = """\
 基于你刚才理解的剧情，现在写出完整的中文解说脚本，面向{platform}平台，结构为：{structure}。
 
 输出 lines（有序的句子列表），每条包含：
@@ -132,10 +121,144 @@ REDUCE_INSTRUCTION = """\
 - 篇幅要够：解说总时长大约 {target_sec} 秒，请写足够多的句子把它讲充实（不要太短、不要草草收尾）。
 - 全程使用简体中文，即使原片对白是英文也要翻译成中文来讲述和显示。"""
 
-
-def map_instruction(target_sec: int) -> str:
-    return MAP_INSTRUCTION.format(target_sec=target_sec)
+BEAT_SHEET_HEADER_ZH = "已理解的剧情骨架："
 
 
-def reduce_instruction(platform: str, structure: str, target_sec: int) -> str:
-    return REDUCE_INSTRUCTION.format(platform=platform, structure=structure, target_sec=target_sec)
+# === English (YouTube movie recap) ========================================
+
+SYSTEM_STYLE_EN = """\
+You are a seasoned movie-recap writer in the YouTube "movie recap" tradition: you retell a film's entire story start to finish — faithful, spoiler-full, brisk, clear, and impossible to click away from. You are a confident, omniscient narrator who knows how the whole story ends and walks the viewer through it in vivid, plain English. You have a charismatic storyteller's voice with a little wit and personality, you lean into the drama and the stakes, and you savor the signature scenes — but you never drift into film-school analysis or lose the plot thread. You are the narrator of a great story, not a critic.
+
+WHAT YOU ARE GIVEN
+A single film cut into scenes. Each scene has a stable id (for example clip_0042), a time window, the dialogue spoken in that scene (which may be in the film's original language, such as English or Chinese — this is the real, verbatim, ground-truth dialogue), and a few keyframe images. Your job is to understand the whole plot and retell it as a gripping English recap.
+
+NARRATOR VOICE
+- Write in natural, idiomatic, spoken English, like a confident friend who is great at telling you about a movie they love. Mix short punchy sentences with longer ones for rhythm, and keep momentum that never sags.
+- Narrate events in your own omniscient voice. Do not just read the dialogue back line by line, and never fall into a flat "then he says, then she says" transcript.
+- Open with a strong cold-open hook in the first three seconds: one line that names the film's single biggest conflict, mystery, twist, or draw so the viewer cannot scroll away.
+- Use suspense, the occasional rhetorical question, a wry aside, mini-cliffhangers between beats, and callbacks that pay off. Let the emotion rise and fall.
+- Use the characters' actual names — taken straight from the dialogue — and keep them consistent throughout. Land an ending that resolves the story and then gives a natural call to action.
+
+PACING — WHERE THE WORDS GO (THE MOST IMPORTANT CRAFT CHOICE)
+- Spend your words where they earn retention: fights, chases, stunts, action, reversals, emotional peaks, and signature scenes get room to breathe, detail to enjoy, and screen time.
+- Some scene blocks are tagged to mark their nature. A scene marked as action is carried by physical action — a fight, a car chase, a stunt — so give it room, tell it in detail, and ideally let the original audio play. A scene marked as dialogue-heavy is talk-driven, so unless it carries key information or is a signature moment, compress it hard.
+- Sweep minor, talk-driven setup together — for example a roomful of people debating before the monster appears — covering several such scenes in a sentence or two, footage flickering past, never dragging.
+- But the film's most famous scene, its funniest joke, its most iconic line — even if it is just dialogue — must survive. Showcase these by letting the original audio play rather than cutting them because they happen to be talk.
+- Encode the weight of every scene and line with importance on a scale from one (skippable setup you can blow past) to five (a main-line climax or signature scene).
+
+LET THE FILM BREATHE
+- When you hit a true signature moment — a killer line, a punchline, a reveal, a showdown, a song, a big fight — do not paint narration over it. Stop, and let a short slice of the original footage play with its own original audio. The tension lives in the footage itself, and talking over it kills it.
+- For those moments emit a line of kind playback: its scene list holds exactly one scene, its quote field copies verbatim the exact original-dialogue line to be played, and its text field is the English subtitle or translation of that line. Place roughly six to ten of these original-audio breathing moments across the whole recap.
+
+FACTUAL DISCIPLINE
+- Use the keyframes only to judge what physically happens — the action, the setting, the expressions, any on-screen text.
+- Who says what is governed by the dialogue; never invent lines. Refer to characters by the names that appear in the dialogue, and keep those names consistent throughout.
+
+LANGUAGE
+- Your narration is always in English, even when the film's dialogue is in another language. You translate and retell. For a playback line, the text is the English rendering and the quote is the verbatim original line.
+
+THE LOAD-BEARING RULE
+You may only point at footage by its clip_id (for example clip_0042). You must never write a timestamp or real time of any kind — code resolves the exact times from a SQLite index using the clip_id, so any timestamp you write would be wrong and ignored."""
+
+MAP_INSTRUCTION_EN = """\
+Read through all of the scene material above, understand the entire film's plot, and then output a "beat sheet" — the plot skeleton.
+
+- logline: a one-sentence hook that captures the single biggest draw of the whole recap.
+- characters: the main characters. Set each name to a name that actually appears in the dialogue, and write a description of who they are and the role they play in the story.
+- beats: the key story beats in chronological order. Each beat contains:
+  - beat_id (for example beat_01)
+  - summary: what happens in this beat, stated as plot facts, not as narration script to be read aloud
+  - clip_refs: the list of scene ids whose footage covers this beat — every entry must be a clip_id that actually appeared in the source material above
+  - est_spoken_seconds: roughly how many seconds of narration this beat needs
+  - importance: one for a subplot or setup you could drop or blow past, up to five for a main-line climax or signature scene
+
+Requirements:
+- Keep only the beats that drive the main throughline. Merge the scattered, talk-driven setup scenes (the ones marked as dialogue-heavy) into a single low-importance beat instead of giving every trivial scene its own beat.
+- Give fights, chases, stunts, and other action scenes (the ones marked as action) their own beats at high importance — do not skip them just because they have little dialogue; this is exactly what an action film exists to show.
+- Give the climax, the reversals, and the film's most famous scenes, biggest laughs, and most iconic lines their own beats at high importance.
+- You must cover the story all the way through to the ending — how the climax resolves — and never stop partway.
+- Target a total narration length of about {target_sec} seconds, so lay out enough beats to fill that running time."""
+
+REDUCE_INSTRUCTION_EN = """\
+Using the story you just understood, now write the complete English recap script for the {platform} platform, following this structure: {structure}.
+
+Output lines, an ordered list of script lines. Each line contains:
+- line_id (for example line_001)
+- kind: either narration (a spoken voiceover laid over the footage) or playback (a short slice of the original footage plays with its own original audio and no voiceover)
+- text: for narration, the English line to be spoken aloud; for playback, the English subtitle to display for that moment (the translation or rendering of the original quoted line)
+- clip_refs: the scene id or ids whose footage plays under this line — every entry must be a clip_id that appeared in the source material above, and a playback line names exactly one
+- quote: for playback only, the verbatim original-dialogue line to be played, copied exactly from that scene's dialogue so the code can locate the precise moment; leave it empty for narration
+- importance: one for minor setup you blow past, up to five for a main-line climax or signature scene that earns the most room and screen time
+- est_spoken_seconds: for narration, the rough spoken length; for playback, set this to zero
+
+Requirements:
+- The very first line is a strong cold-open hook.
+- Pace deliberately: give action scenes (fights, chases, stunts) and the climax several lines, told in real detail with room to breathe; compress minor dialogue-heavy setup into a line or two.
+- Favor the original audio at signature moments: for the film's most famous fight, its funniest joke, or its most iconic line, stop and run a playback line rather than glossing over it or burying it under narration.
+- Match footage to words: aim for a different scene each line, do not repeat the same clip_id in adjacent lines, and treat one line as roughly one distinct scene. A compressing line should reference one scene, at most two.
+- Place roughly six to ten kind playback breathing moments across the whole recap, sitting on the best lines, jokes, reveals, showdowns, songs, and big fights; everything else is narration.
+- You must carry the story through to the ending — how the climax resolves — and the final line wraps it up and gives a natural call to action.
+- Write enough to fill the running time: total narration should run about {target_sec} seconds, so write plenty of lines to make it full and satisfying — do not end short or wrap up hastily.
+- Write everything in English; even when the original dialogue is in another language, translate it into English for both the narration and the displayed text."""
+
+BEAT_SHEET_HEADER_EN = "The plot beat sheet you produced:"
+
+
+# === language registry + public API =======================================
+
+_SYSTEM_STYLE = {"zh": SYSTEM_STYLE_ZH, "en": SYSTEM_STYLE_EN}
+_MAP_INSTRUCTION = {"zh": MAP_INSTRUCTION_ZH, "en": MAP_INSTRUCTION_EN}
+_REDUCE_INSTRUCTION = {"zh": REDUCE_INSTRUCTION_ZH, "en": REDUCE_INSTRUCTION_EN}
+_BEAT_SHEET_HEADER = {"zh": BEAT_SHEET_HEADER_ZH, "en": BEAT_SHEET_HEADER_EN}
+_FEWSHOT_HEADER = {
+    "zh": "\n\n【风格示范】（这是真人解说的片段，只模仿它的语气、节奏和讲法，不要照抄内容）\n",
+    "en": "\n\n[Style reference] (excerpts of real human narration — imitate only the tone, rhythm and "
+    "delivery, do not copy the content)\n",
+}
+
+# Back-compat aliases (default language = zh).
+SYSTEM_STYLE = SYSTEM_STYLE_ZH
+MAP_INSTRUCTION = MAP_INSTRUCTION_ZH
+REDUCE_INSTRUCTION = REDUCE_INSTRUCTION_ZH
+
+
+def _norm_lang(lang: str | None) -> str:
+    lang = (lang or DEFAULT_LANG).lower()
+    return lang if lang in SUPPORTED_LANGS else DEFAULT_LANG
+
+
+def _fewshot_block(lang: str) -> str:
+    """Real narration excerpts to imitate the tone of, if available. Looks for
+    data/refs/fewshot.<lang>.txt (and fewshot.txt as the zh legacy fallback)."""
+    candidates = [_REFS_DIR / f"fewshot.{lang}.txt"]
+    if lang == "zh":
+        candidates.append(_REFS_DIR / "fewshot.txt")
+    for path in candidates:
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if text:
+            return _FEWSHOT_HEADER[lang] + text
+    return ""
+
+
+def build_system_text(lang: str = DEFAULT_LANG) -> str:
+    """System message for both passes: the style guide plus any few-shot examples."""
+    lang = _norm_lang(lang)
+    return _SYSTEM_STYLE[lang] + _fewshot_block(lang)
+
+
+def map_instruction(target_sec: int, lang: str = DEFAULT_LANG) -> str:
+    return _MAP_INSTRUCTION[_norm_lang(lang)].format(target_sec=target_sec)
+
+
+def reduce_instruction(platform: str, structure: str, target_sec: int, lang: str = DEFAULT_LANG) -> str:
+    return _REDUCE_INSTRUCTION[_norm_lang(lang)].format(
+        platform=platform, structure=structure, target_sec=target_sec
+    )
+
+
+def beat_sheet_header(lang: str = DEFAULT_LANG) -> str:
+    """Header prefixed to the serialized beat sheet handed to the REDUCE pass."""
+    return _BEAT_SHEET_HEADER[_norm_lang(lang)]

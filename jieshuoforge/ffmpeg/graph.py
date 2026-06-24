@@ -7,7 +7,9 @@ is only safe across identical codec params. Each segment is rendered with:
     the voiceover duration (footage conformed to audio, never time-stretched)
   - audio: original movie audio ducked under the voiceover (sidechaincompress),
     then mixed with the voiceover and limited.
-Subtitle burn-in is a separate final pass (needs an ffmpeg built with libass).
+Subtitle burn-in (when enabled) is folded into each segment's encode via the optional
+``ass_path`` on ``normalize_segment_cmd`` — one cue per segment, no separate full-length
+pass; needs an ffmpeg built with libass. The stream-copy concat then carries it through.
 """
 
 from __future__ import annotations
@@ -41,9 +43,21 @@ def normalize_segment_cmd(
     target_lufs: float = -16.0,
     score_stem: str | None = None,
     bed_gain_db: float = -14.0,
+    ass_path: str | Path | None = None,
+    fonts_dir: str | Path | None = None,
 ) -> list[str]:
     span = max(0.1, seg.src_out - seg.src_in)
     vd = seg.vo_duration
+
+    # Optional subtitle burn-in DURING the segment encode (one cue spanning [0, vd] in the
+    # segment's local timeline). Doing it here avoids a second full-length re-encode pass —
+    # the stream-copy concat then carries the burned-in subs through to the final video.
+    sub = ""
+    if ass_path is not None:
+        s = f"subtitles={_escape(str(ass_path))}"
+        if fonts_dir is not None:
+            s += f":fontsdir={_escape(str(fonts_dir))}"
+        sub = f",{s}"
 
     # shared video conform: scale/pad to the canonical frame, freeze-pad to the
     # segment duration (footage conformed to audio, never time-stretched).
@@ -51,7 +65,7 @@ def normalize_segment_cmd(
         f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},"
         f"tpad=stop_mode=clone:stop_duration={_f(vd)},trim=duration={_f(vd)},"
-        f"setpts=PTS-STARTPTS[v];"
+        f"setpts=PTS-STARTPTS{sub}[v];"
     )
 
     if seg.kind == "playback":
@@ -125,26 +139,18 @@ def normalize_segment_cmd(
     ]
 
 
-def concat_cmd(list_file: Path, out_path: Path) -> list[str]:
-    # segments share an identical profile after normalization, so stream-copy concat is safe
+def concat_cmd(list_file: Path, out_path: Path, *, audio_rate: int = 48000) -> list[str]:
+    # Video is stream-copied (every segment already shares the canonical profile, with subs
+    # burned in) — fast and lossless. Audio is RE-ENCODED into ONE continuous stream:
+    # copying independently-encoded per-segment AAC leaves each segment's encoder
+    # priming/padding embedded at the joins, audible as a click/pop at every segment
+    # boundary. Decoding+re-encoding across the concat yields a single continuous AAC stream
+    # with no per-segment priming, removing those boundary artifacts (video untouched, so
+    # the extra cost is just the cheap audio re-encode).
     return [
         FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
         "-f", "concat", "-safe", "0", "-i", str(list_file),
-        "-c", "copy", str(out_path),
-    ]
-
-
-def burn_subs_cmd(
-    in_video: Path, ass_path: Path, out_path: Path, *, fonts_dir: Path | None, vcodec: str, pix_fmt: str
-) -> list[str]:
-    sub = f"subtitles={_escape(str(ass_path))}"
-    if fonts_dir is not None:
-        sub += f":fontsdir={_escape(str(fonts_dir))}"
-    return [
-        FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
-        "-i", str(in_video),
-        "-vf", sub,
-        "-c:v", vcodec, "-pix_fmt", pix_fmt, "-c:a", "copy",
+        "-c:v", "copy", "-c:a", "aac", "-ar", str(audio_rate), "-ac", "2",
         str(out_path),
     ]
 
@@ -170,6 +176,8 @@ def render_segments(
     score_stem: str | None = None,
     bed_gain_db: float = -14.0,
     workers: int = 1,
+    seg_ass: dict[str, Path] | None = None,
+    fonts_dir: str | Path | None = None,
 ) -> list[Path]:
     """Normalize every EDL segment to one canonical profile.
 
@@ -177,9 +185,13 @@ def render_segments(
     run on a thread pool (ffmpeg releases the GIL in the subprocess). Output order
     matches ``edl.segments`` regardless of completion order, so the downstream
     stream-copy concat stays correct. A failing segment re-raises and aborts.
+
+    ``seg_ass`` maps ``segment_id`` -> a one-cue .ass to burn into that segment (subtitles
+    rendered in the per-segment pass instead of a separate full-length burn pass).
     """
     scratch_dir.mkdir(parents=True, exist_ok=True)
     segs = list(edl.segments)
+    seg_ass = seg_ass or {}
 
     def _encode(seg: EdlSegment) -> Path:
         out = scratch_dir / f"{seg.segment_id}.mp4"
@@ -190,6 +202,7 @@ def render_segments(
             audio_rate=render_cfg["audio_rate"], ducking=ducking_cfg,
             target_lufs=float(render_cfg.get("target_lufs", -16.0)),
             score_stem=score_stem, bed_gain_db=bed_gain_db,
+            ass_path=seg_ass.get(seg.segment_id), fonts_dir=fonts_dir,
         )
         run(cmd)
         return out

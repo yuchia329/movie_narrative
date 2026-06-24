@@ -1,0 +1,33 @@
+# Add these jobs to your existing Prometheus (scrape_configs:). The control-plane
+# services and the GPU box all expose /metrics; dcgm-exporter on the GPU box gives
+# GPU utilization/memory (the real bottleneck).
+scrape_configs:
+  # Platform metrics: runs, queue depth, budget remaining (authoritative, from DB+Redis).
+  - job_name: jieshuo-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]      # or the nginx host:80 /metrics
+
+  # Per-run histograms/counters pushed by Celery workers.
+  - job_name: jieshuo-pushgateway
+    honor_labels: true
+    static_configs:
+      - targets: ["pushgateway:9091"]
+
+  # Host: CPU/mem/disk-free (watch the work volume — disk is a recurring pain point).
+  - job_name: jieshuo-node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  # gpud (on-demand supervisor) metrics: instances up, per-GPU free vRAM, cold starts.
+  - job_name: jieshuo-gpud
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["10.10.0.2:9050"]   # gpud side metrics port (via tunnel/WireGuard)
+  # Per-instance ASR/TTS metrics side ports are off by default for pooled instances
+  # (avoid port sprawl); gpud's aggregate + the orchestrator /metrics cover the signal.
+
+  # GPU utilization/memory — run dcgm-exporter on the GPU box.
+  - job_name: jieshuo-gpu-dcgm
+    static_configs:
+      - targets: ["10.10.0.2:9400"]

@@ -56,11 +56,27 @@ request_timeout_sec = 1800               # per-request timeout; M3 reasoning + l
 thinking_map = "adaptive"
 thinking_reduce = "disabled"
 
+[narration]
+# Narration language: "zh" (Mandarin 抖音/快手 解说) or "en" (English YouTube-style recap).
+# The source film can be in any language; the model translates and retells in this one.
+# Override per run with: jieshuo run MOVIE --lang en
+language = "zh"
+# Spoken-rate calibration for the runtime budget (s08 estimates seconds from the text).
+zh_cps = 4.0                  # Mandarin characters per second (CosyVoice2 measured ~3.8)
+en_wps = 2.5                  # English words per second (~150 wpm)
+
 [platform.douyin]
 target_min_sec = 600          # 10 min
 target_max_sec = 720          # 12 min
 hook_seconds = 3              # opening hook budget
 structure = "hook -> conflict -> emotional_peak -> cta"
+
+[platform.youtube_recap]
+# English movie-recap profile (used when narration language is "en"). Tune to taste.
+target_min_sec = 600          # 10 min
+target_max_sec = 720          # 12 min
+hook_seconds = 3              # cold-open hook budget
+structure = "cold-open hook -> setup -> rising conflict -> climax -> resolution -> call to action"
 
 [tts]
 provider = "cosyvoice2"       # cosyvoice2 | indextts2
@@ -73,6 +89,13 @@ reference_text = "然而FBI却说成龙肤浅没见过大场面几时后FBI大�
 seed = 42                     # pin voice + seed so timbre never drifts
 target_lufs = -16.0
 workers = 1                   # parallel TTS requests; the single TTS GPU serializes, so 2-3 is the realistic ceiling
+
+# English narrator voice (used when narration language is "en"). CosyVoice2 is multilingual /
+# zero-shot: point reference_clip at an ENGLISH reference clip ON the GPU server + its transcript.
+# Leave empty to let the TTS server fall back to its own default voice.
+[tts.en]
+reference_clip = ""
+reference_text = ""
 
 [audio]
 # Under narration, play the film's OWN score/SFX as a bed (dialogue stripped via Demucs,

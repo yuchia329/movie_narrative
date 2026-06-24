@@ -1,0 +1,21 @@
+# PRODUCTION overlay (single EC2): AWS S3 for files (no MinIO); env/prod.env. Postgres
+# + Redis run as containers here; the k8s prod manifests use StatefulSets instead.
+# Put TLS in front (ALB/Caddy) or extend nginx.conf with a 443 server + certs.
+#   docker compose -f compose/docker-compose.base.yml -f compose/docker-compose.prod.yml up -d --build
+
+x-prodenv: &prodenv
+  env_file: [../env/prod.env]
+
+services:
+  api:        { <<: *prodenv }
+  worker-cpu: { <<: *prodenv }
+  worker-asr: { <<: *prodenv }
+  worker-tts: { <<: *prodenv }
+  worker-llm: { <<: *prodenv }
+  worker-render: { <<: *prodenv }
+  beat:       { <<: *prodenv }
+
+  # No MinIO in prod — files live in AWS S3 (S3_ENDPOINT_URL unset). Prefer an EC2 IAM
+  # instance role for S3 access; if using static keys, put them in env/prod.env.
+  nginx:
+    ports: ["80:80", "443:443"]

@@ -1,0 +1,92 @@
+# 解说 platform — app stack for one EC2 control plane.
+#
+# The GPU services (ASR/TTS) stay on the existing GPU box, reached via the
+# ASR_SERVER_URL / TTS_SERVER_URL env (point them at the WireGuard peer IP; see
+# deploy/README.md). Prometheus/Grafana/Loki are assumed to already run on this host —
+# add deploy/prometheus/scrape.yml + deploy/promtail/promtail.yml to them. If you don't
+# have them, bring up deploy/docker-compose.observability.yml alongside this file.
+#
+#   docker compose --env-file deploy/.env up -d --build
+#
+# Workers are split by resource class so concurrency matches the physical limits:
+#   gpu = 1 (the GPU box serializes), llm small ($-gated), render ≈ n_cpu, cpu modest.
+
+x-app: &app
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  image: jieshuoforge:latest
+  env_file: [.env]
+  depends_on: [redis, postgres]
+  restart: unless-stopped
+  volumes:
+    - work:/scratch/work          # per-run working cache (S3 is the durable store)
+
+services:
+  api:
+    <<: *app
+    command: gunicorn jieshuoforge_web.api:app -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 --workers 2 --timeout 120
+    expose: ["8000"]
+
+  worker-cpu:
+    <<: *app
+    command: celery -A jieshuoforge_web.tasks worker -Q cpu -n cpu@%h --concurrency 2 -l info
+
+  worker-gpu:
+    <<: *app
+    # concurrency 1: ASR + TTS hit one model per GPU on the box; serialize them.
+    command: celery -A jieshuoforge_web.tasks worker -Q gpu -n gpu@%h --concurrency 1 -l info
+
+  worker-llm:
+    <<: *app
+    command: celery -A jieshuoforge_web.tasks worker -Q llm -n llm@%h --concurrency 2 -l info
+
+  worker-render:
+    <<: *app
+    # libx264 is already multithreaded; keep this modest to avoid CPU oversubscription.
+    command: celery -A jieshuoforge_web.tasks worker -Q render -n render@%h --concurrency 2 -l info
+
+  beat:
+    <<: *app
+    command: celery -A jieshuoforge_web.tasks beat -l info
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on: [api]
+    ports: ["80:80"]
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redis:/data]
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: jieshuo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jieshuo}
+      POSTGRES_DB: jieshuo
+    volumes: [pg:/var/lib/postgresql/data]
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    command: ["--path.rootfs=/host"]
+    pid: host
+    volumes: ["/:/host:ro,rslave"]
+    expose: ["9100"]
+    restart: unless-stopped
+
+  pushgateway:
+    image: prom/pushgateway:latest
+    expose: ["9091"]
+    restart: unless-stopped
+
+volumes:
+  work:
+  redis:
+  pg:

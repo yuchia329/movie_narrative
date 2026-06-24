@@ -1,0 +1,21 @@
+# Repurpose worker-cpu as the single combined worker draining every queue. The box is small
+# and the GPU is on-demand, so one worker suffices (the standalone gpu-tunnel decouples GPU
+# access — it dials gpu-tunnel:50050). The other per-queue workers + beat are removed by the
+# delete patches in kustomization.yaml. Scratch (emptyDir on root EBS) is bounded with
+# sizeLimit; the worker also prunes each movie dir after persisting to S3 (finalize_run).
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: worker-cpu}
+spec:
+  template:
+    spec:
+      containers:
+        - name: worker
+          command: ["celery", "-A", "jieshuoforge_web.tasks", "worker",
+                    "-Q", "cpu,asr,tts,llm,render", "-n", "worker@%h", "--concurrency", "2", "-l", "info"]
+          resources:
+            requests: {cpu: "250m", memory: "768Mi"}
+            limits: {cpu: "2", memory: "2Gi"}
+      volumes:
+        - name: work
+          emptyDir: {sizeLimit: 8Gi}

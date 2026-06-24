@@ -11,19 +11,24 @@ The reference audio has music/clip bleed under the narration (user accepted this
 for a cleaner clone, optionally isolate vocals with Demucs on the GPU box first
 (see --vocals) and point this at the isolated stem.
 
+Works for any narration language via --language: pass an English reference video to
+build a natural English narrator voice (CosyVoice2 zero-shot clones the timbre, so a
+native-English reference makes the recap sound natural rather than accented).
+
 Usage (needs the SSH tunnel up + ASR service reachable at ASR_SERVER_URL):
-    uv run python scripts/build_narrator_ref.py data/RushHour1_final.webm
-    uv run python scripts/build_narrator_ref.py data/RushHour1_final.webm --target-len 14
+    uv run python scripts/build_narrator_ref.py data/RushHour1_final.webm           # Mandarin
+    uv run python scripts/build_narrator_ref.py some_english_narration.mp4 --language en
 
-Outputs under data/refs/:
-    <name>.zh.json   full WhisperX transcript (Mandarin)
-    <name>.zh.txt    full joined narration (inspect / hand-edit few-shots from this)
-    fewshot.txt      style few-shots injected into the system prompt (first ~800 chars)
-    narrator_ref.wav the clone prompt clip (16 kHz mono)
-    narrator_ref.txt its transcript (REF_TEXT)
+Outputs under data/refs/ (suffixed by language; zh keeps legacy names):
+    <name>.<lang>.json     full WhisperX transcript
+    <name>.<lang>.txt      full joined narration (inspect / hand-edit few-shots from this)
+    fewshot[.<lang>].txt   style few-shots injected into the system prompt (first ~800 chars)
+    narrator_ref[.<lang>].wav  the clone prompt clip (16 kHz mono)
+    narrator_ref[.<lang>].txt  its transcript (REF_TEXT)
 
-Then upload narrator_ref.wav to the GPU box and set [tts] reference_clip /
-reference_text in config/pipeline.toml (reference_clip is the path ON the server).
+Then upload the clip to the GPU box and set reference_clip / reference_text in
+config/pipeline.toml — under [tts] for zh, or [tts.<lang>] (e.g. [tts.en]) for other
+languages (reference_clip is the path ON the server).
 """
 
 from __future__ import annotations
@@ -66,12 +71,17 @@ def _looks_like_clip(text: str) -> bool:
     return any(c in _TRAD for c in text)
 
 
-def best_span(tr: Transcript, target_len: float, min_len: float) -> tuple[float, float, str]:
+def best_span(
+    tr: Transcript, target_len: float, min_len: float, lang: str = "zh"
+) -> tuple[float, float, str]:
     """Pick a clean narrator reference: a single WHOLE narration segment whose duration
     fits the clone budget (so its transcript matches the audio exactly), preferring the
-    longest such. Skips Traditional-text segments (embedded movie clips). Falls back to
-    the longest non-clip segment, trimmed to target_len, if none fit."""
-    segs = [s for s in tr.segments if s.text.strip() and not _looks_like_clip(s.text)]
+    longest such. For zh, skips Traditional-text segments (embedded movie clips). Falls
+    back to the longest segment, trimmed to target_len, if none fit."""
+    if lang == "zh":
+        segs = [s for s in tr.segments if s.text.strip() and not _looks_like_clip(s.text)]
+    else:
+        segs = [s for s in tr.segments if s.text.strip()]
     if not segs:
         raise SystemExit("no clean narration segments in transcript")
     hi = target_len * 1.25
@@ -94,6 +104,7 @@ def main() -> None:
     args = ap.parse_args()
 
     load_dotenv(REPO / ".env")
+    lang = args.language.lower()
     asr_url = args.asr_url or os.environ.get("ASR_SERVER_URL")
     if not asr_url:
         raise SystemExit("set ASR_SERVER_URL (start the tunnel + ASR service) or pass --asr-url")
@@ -102,7 +113,7 @@ def main() -> None:
     src = Path(args.video).resolve()
     name = src.stem
     full_wav = REFS / f"{name}.16k.wav"
-    tr_json = REFS / f"{name}.zh.json"
+    tr_json = REFS / f"{name}.{lang}.json"
 
     print(f"[1/4] extracting audio -> {full_wav.name}")
     extract_wav(src, full_wav)
@@ -111,29 +122,32 @@ def main() -> None:
         print(f"[2/4] using cached transcript {tr_json.name}")
         tr = Transcript.load(tr_json)
     else:
-        print(f"[2/4] transcribing ({args.language}) via {asr_url} …")
-        tr = ASRClient(asr_url).transcribe(full_wav, language=args.language)
+        print(f"[2/4] transcribing ({lang}) via {asr_url} …")
+        tr = ASRClient(asr_url).transcribe(full_wav, language=lang)
         tr.save(tr_json)
     print(f"      {len(tr.segments)} segments")
 
     joined = " ".join(s.text.strip() for s in tr.segments if s.text.strip())
-    (REFS / f"{name}.zh.txt").write_text(joined, encoding="utf-8")
-    fewshot = REFS / "fewshot.txt"
+    (REFS / f"{name}.{lang}.txt").write_text(joined, encoding="utf-8")
+    # prompts.py reads fewshot.<lang>.txt (zh also falls back to the legacy fewshot.txt).
+    fewshot = REFS / ("fewshot.txt" if lang == "zh" else f"fewshot.{lang}.txt")
     if not fewshot.exists():
         fewshot.write_text(joined[:800].strip(), encoding="utf-8")
         print(f"[3/4] wrote {fewshot.name} ({min(len(joined),800)} chars) — review/trim by hand")
     else:
         print(f"[3/4] {fewshot.name} already exists — left as-is")
 
-    t0, t1, text = best_span(tr, args.target_len, args.min_len)
-    ref_wav = REFS / "narrator_ref.wav"
+    t0, t1, text = best_span(tr, args.target_len, args.min_len, lang=lang)
+    ref_stem = "narrator_ref" if lang == "zh" else f"narrator_ref.{lang}"
+    ref_wav = REFS / f"{ref_stem}.wav"
     cut_span(full_wav, t0, t1 - t0, ref_wav)
-    (REFS / "narrator_ref.txt").write_text(text, encoding="utf-8")
+    (REFS / f"{ref_stem}.txt").write_text(text, encoding="utf-8")
     print(f"[4/4] clone clip {ref_wav.name}: {t0:.1f}-{t1:.1f}s ({t1-t0:.1f}s)")
     print(f"      REF_TEXT: {text}")
     print()
-    print("Next: upload narrator_ref.wav to the GPU box, then set in config/pipeline.toml [tts]:")
-    print('  reference_clip = "/abs/server/path/narrator_ref.wav"')
+    section = "[tts]" if lang == "zh" else f"[tts.{lang}]"
+    print(f"Next: upload {ref_wav.name} to the GPU box, then set in config/pipeline.toml {section}:")
+    print(f'  reference_clip = "/abs/server/path/{ref_wav.name}"')
     print(f'  reference_text = "{text}"')
 
 

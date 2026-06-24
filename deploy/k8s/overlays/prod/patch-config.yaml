@@ -1,0 +1,24 @@
+# Prod config: real AWS S3 (no endpoint override -> presigned URLs hit AWS directly, so the
+# browser needs no extra subdomain), secure cookies (Cloudflare terminates TLS at the edge),
+# and on-demand GPU via gpud reached through the in-cluster gpu-tunnel Service.
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: jieshuo-config}
+data:
+  S3_BUCKET: "recap-artifacts-prod"
+  AWS_REGION: "us-east-1"
+  # S3_ENDPOINT_URL / S3_PUBLIC_ENDPOINT_URL intentionally absent -> AWS S3 directly.
+  COOKIE_SECURE: "true"
+  # Behind Cloudflare -> Traefik, trust the forwarded scheme so the app knows it's https.
+  FORWARDED_ALLOW_IPS: "*"
+  # On-demand GPU: lease ASR/TTS instances from gpud via the gpu-tunnel (headless) Service.
+  GPU_SUPERVISOR_TARGET: "gpu-tunnel:50050"
+  GPUD_PORT_RANGE: "50060-50099"
+  # GPU box the tunnel SSHes to (same box video-search already reaches).
+  GPU_HOST: "nlp-gpu-01.be.ucsc.edu"
+  GPU_USER: "ychan137"
+  GPU_PORT: "22"
+  # Worker per-run push metrics disabled by default to save RAM on the shared box; the API
+  # pull /metrics (queue depth, runs, errors, budget) + gpud cover the critical signals.
+  # Set to http://recap-pushgateway:9091 and deploy a pushgateway to enable stage histograms.
+  PUSHGATEWAY_URL: ""

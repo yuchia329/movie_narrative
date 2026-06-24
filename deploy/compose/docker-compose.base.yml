@@ -1,0 +1,102 @@
+# Base stack shared by local + prod. Bring up with an overlay:
+#   docker compose -f compose/docker-compose.base.yml -f compose/docker-compose.local.yml up -d --build
+#   docker compose -f compose/docker-compose.base.yml -f compose/docker-compose.prod.yml  up -d --build
+#
+# Resource-split Celery workers: gpu=1 (the box serializes), llm small ($-gated),
+# render ≈ n_cpu, cpu modest. The overlay supplies the env_file (local.env / prod.env).
+# GPU services (ASR/TTS gRPC) are external — set ASR_GRPC_TARGET / TTS_GRPC_TARGET.
+
+x-app: &app
+  build:
+    context: ../..
+    dockerfile: deploy/Dockerfile
+  image: jieshuoforge:latest
+  restart: unless-stopped
+  volumes:
+    - work:/scratch/work
+
+services:
+  api:
+    <<: *app
+    command: gunicorn jieshuoforge_web.api:app -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 --workers 2 --timeout 120
+    expose: ["8000"]
+    depends_on: [redis, postgres]
+
+  worker-cpu:
+    <<: *app
+    command: celery -A jieshuoforge_web.tasks worker -Q cpu -n cpu@%h --concurrency 2 -l info
+    depends_on: [redis, postgres]
+
+  # ASR and TTS are separate queues so they overlap. Concurrency 3 = up to 3 of each in
+  # flight; gpud admits/places them (≤ MAX, by free vRAM). Without gpud (static always-on
+  # server) the per-task Redis lock still serializes to one, so 3 is safe either way.
+  worker-asr:
+    <<: *app
+    command: celery -A jieshuoforge_web.tasks worker -Q asr -n asr@%h --concurrency 3 -l info
+    depends_on: [redis, postgres]
+
+  worker-tts:
+    <<: *app
+    command: celery -A jieshuoforge_web.tasks worker -Q tts -n tts@%h --concurrency 3 -l info
+    depends_on: [redis, postgres]
+
+  worker-llm:
+    <<: *app
+    command: celery -A jieshuoforge_web.tasks worker -Q llm -n llm@%h --concurrency 2 -l info
+    depends_on: [redis, postgres]
+
+  worker-render:
+    <<: *app
+    command: celery -A jieshuoforge_web.tasks worker -Q render -n render@%h --concurrency 2 -l info
+    depends_on: [redis, postgres]
+
+  beat:
+    <<: *app
+    command: celery -A jieshuoforge_web.tasks beat -l info
+    depends_on: [redis]
+
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on: [api]
+    ports: ["80:80"]
+    volumes:
+      - ../nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redis:/data]
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: jieshuo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jieshuo}
+      POSTGRES_DB: jieshuo
+    volumes: [pg:/var/lib/postgresql/data]
+    restart: unless-stopped
+
+  # Host-metrics exporter — only meaningful on the real Linux deploy host. Its rootfs
+  # bind-mount (/:/host:ro,rslave) FAILS on Docker Desktop for Mac ("path / is mounted on /
+  # but it is not a shared or slave mount"). Gated behind a profile so local `up` skips it;
+  # enable on prod/EC2 with `COMPOSE_PROFILES=host-metrics` (or `--profile host-metrics`).
+  node-exporter:
+    image: prom/node-exporter:latest
+    command: ["--path.rootfs=/host"]
+    pid: host
+    volumes: ["/:/host:ro,rslave"]
+    expose: ["9100"]
+    profiles: ["host-metrics"]
+    restart: unless-stopped
+
+  pushgateway:
+    image: prom/pushgateway:latest
+    expose: ["9091"]
+    restart: unless-stopped
+
+volumes:
+  work:
+  redis:
+  pg:

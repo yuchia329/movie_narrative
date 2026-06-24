@@ -25,20 +25,8 @@ def _ts(t: float) -> str:
     return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
 
 
-def build_ass(
-    edl: Edl,
-    out_path: str | Path,
-    *,
-    width: int,
-    height: int,
-    font_name: str = "Noto Sans CJK SC",
-    font_size: int = 48,
-    margin_v: int = 60,
-) -> Path:
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    header = (
+def _ass_header(width: int, height: int, font_name: str, font_size: int, margin_v: int) -> str:
+    return (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
         f"PlayResX: {width}\nPlayResY: {height}\n"
@@ -54,14 +42,56 @@ def build_ass(
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
 
-    lines = [header]
+
+def _dialogue(start: float, end: float, text: str) -> str:
+    return f"Dialogue: 0,{_ts(start)},{_ts(end)},Default,,0,0,0,,{text.replace(chr(10), chr(92) + 'N').strip()}\n"
+
+
+def build_ass(
+    edl: Edl,
+    out_path: str | Path,
+    *,
+    width: int,
+    height: int,
+    font_name: str = "Noto Sans CJK SC",
+    font_size: int = 48,
+    margin_v: int = 60,
+) -> Path:
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    lines = [_ass_header(width, height, font_name, font_size, margin_v)]
     t = 0.0
     for seg in edl.segments:
-        start, end = t, t + seg.screen_duration
-        text = seg.subtitle_text.replace("\n", "\\N").strip()
-        lines.append(f"Dialogue: 0,{_ts(start)},{_ts(end)},Default,,0,0,0,,{text}\n")
+        end = t + seg.screen_duration
+        lines.append(_dialogue(t, end, seg.subtitle_text))
         t = end
 
     out_path.write_text("".join(lines), encoding="utf-8")
     log.info("[subs] %d cues -> %s", len(edl.segments), out_path.name)
+    return out_path
+
+
+def build_segment_ass(
+    text: str,
+    duration: float,
+    out_path: str | Path,
+    *,
+    width: int,
+    height: int,
+    font_name: str = "Noto Sans CJK SC",
+    font_size: int = 48,
+    margin_v: int = 60,
+) -> Path | None:
+    """Write a one-cue .ass spanning ``[0, duration]`` in the SEGMENT's local timeline, for
+    burning into that segment during its encode (the segment video is reset to PTS 0).
+
+    Because each EDL segment carries exactly one cue (see :func:`build_ass`), per-segment
+    burn-in needs no timeline splitting. Returns ``None`` for empty text (nothing to burn)."""
+    if not text or not text.strip():
+        return None
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    body = _ass_header(width, height, font_name, font_size, margin_v) + _dialogue(0.0, duration, text)
+    out_path.write_text(body, encoding="utf-8")
     return out_path

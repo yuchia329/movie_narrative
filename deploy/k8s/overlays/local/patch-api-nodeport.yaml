@@ -1,0 +1,8 @@
+# Local: expose the API on a NodePort so kind/minikube users can reach it directly.
+apiVersion: v1
+kind: Service
+metadata: {name: api}
+spec:
+  type: NodePort
+  ports:
+    - {name: http, port: 80, targetPort: 8000, nodePort: 30800}

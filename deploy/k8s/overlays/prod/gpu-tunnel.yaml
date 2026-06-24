@@ -1,0 +1,58 @@
+# Standalone SSH tunnel to the on-demand GPU box (gpud), mirroring the working
+# video-search/gpu-tunnel pattern. Forwards gpud's control port (50050), the instance pool
+# (50060-50099), and gpud's Prometheus metrics (9050) from the box to this pod, bound on
+# 0.0.0.0 so other pods can reach them. The Service is HEADLESS so the worker can dial the
+# pod IP on ANY leased port in the range (gpud hands back a port in 50060-50099) without
+# enumerating all 40 ports. Reuses the same GPU box + key as video-search.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-tunnel
+  labels: {app: jieshuo, component: gpu-tunnel}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: jieshuo, component: gpu-tunnel}}
+  template:
+    metadata: {labels: {app: jieshuo, component: gpu-tunnel}}
+    spec:
+      containers:
+        - name: ssh-tunnel
+          image: linuxserver/openssh-server:latest
+          command: ["sh", "-c"]
+          args:
+            - |
+              mkdir -p ~/.ssh && chmod 700 ~/.ssh
+              cp /ssh-key/id_rsa ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa
+              FLAGS="-L 0.0.0.0:50050:localhost:50050 -L 0.0.0.0:9050:localhost:9050"
+              for p in $(seq 50060 50099); do FLAGS="$FLAGS -L 0.0.0.0:$p:localhost:$p"; done
+              while true; do
+                echo "[gpu-tunnel] connecting ${GPU_USER}@${GPU_HOST}:${GPU_PORT:-22} (gpud 50050 + pool 50060-50099 + metrics 9050)"
+                ssh -N \
+                  -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+                  -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=no \
+                  $FLAGS -p "${GPU_PORT:-22}" "${GPU_USER}@${GPU_HOST}"
+                echo "[gpu-tunnel] ssh exited — retrying in 5s"; sleep 5
+              done
+          env:
+            - {name: GPU_HOST, valueFrom: {configMapKeyRef: {name: jieshuo-config, key: GPU_HOST}}}
+            - {name: GPU_USER, valueFrom: {configMapKeyRef: {name: jieshuo-config, key: GPU_USER}}}
+            - {name: GPU_PORT, valueFrom: {configMapKeyRef: {name: jieshuo-config, key: GPU_PORT, optional: true}}}
+          volumeMounts: [{name: ssh-key, mountPath: /ssh-key, readOnly: true}]
+          resources:
+            requests: {cpu: "20m", memory: "32Mi"}
+            limits: {cpu: "100m", memory: "64Mi"}
+      volumes:
+        - name: ssh-key
+          secret: {secretName: gpu-ssh-key, defaultMode: 256}   # 0400
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpu-tunnel
+  labels: {app: jieshuo, component: gpu-tunnel}
+spec:
+  clusterIP: None        # headless: pods dial the tunnel pod IP directly, incl the dynamic 50060-50099 range
+  selector: {app: jieshuo, component: gpu-tunnel}
+  ports:
+    - {name: gpud, port: 50050, targetPort: 50050}
+    - {name: gpud-metrics, port: 9050, targetPort: 9050}

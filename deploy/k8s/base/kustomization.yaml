@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+commonLabels:
+  app.kubernetes.io/part-of: jieshuo
+
+resources:
+  - config.yaml
+  - api.yaml
+  - workers.yaml
+  - datastores.yaml
+  - gpu-external.yaml

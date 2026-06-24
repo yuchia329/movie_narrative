@@ -1,0 +1,24 @@
+# uv-managed environment for the ASR service AND gpud (both run here — gpud needs NVML).
+#   cd ~/jieshuo/server/asr && uv sync
+#   uv run --no-sync --project ~/jieshuo/server/asr python ~/jieshuo/server/asr_service.py
+#
+# Deps-only "virtual" project (package = false): `uv sync` just builds server/asr/.venv.
+# The service code (server/*.py) and stubs (jieshuorpc/) are reached via the script dir +
+# PYTHONPATH=~/jieshuo, not installed here.
+[project]
+name = "jieshuo-asr-env"
+version = "0"
+# >=3.11: whisperx pulls onnxruntime, which dropped Python 3.10 wheels (latest ships
+# cp311-cp314 only). The TTS env stays on 3.10 for CosyVoice2 — the envs are independent.
+requires-python = ">=3.11"
+dependencies = [
+    "whisperx>=3.1",
+    "grpcio>=1.60",
+    "grpcio-health-checking>=1.60",
+    "protobuf>=4.25",
+    "prometheus-client>=0.20",
+    "nvidia-ml-py>=12.0",   # NVML (pynvml) for gpud free-vRAM placement
+]
+
+[tool.uv]
+package = false

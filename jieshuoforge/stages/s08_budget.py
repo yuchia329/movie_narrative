@@ -33,8 +33,11 @@ def run_stage(
     target_min_sec: float,
     target_max_sec: float,
     cps: float = 4.0,
+    wps: float = 2.0,
 ) -> Script:
-    # 1. recompute durations from text (don't trust the model); playback lines cost 0
+    # 1. recompute durations from text (don't trust the model); playback lines cost 0.
+    #    cps governs CJK (Mandarin); wps governs Latin words (English) — both apply to
+    #    whatever the line actually contains, so mixed-language text is handled too.
     for line in script.lines:
         if line.kind == "playback":
             line.est_spoken_seconds = 0.0
@@ -42,7 +45,7 @@ def run_stage(
             if not line.quote:
                 log.warning("%s is playback but has no quote — will use the scene's dialogue span", line.line_id)
         else:
-            line.est_spoken_seconds = estimate_spoken_seconds(line.text, cps=cps)
+            line.est_spoken_seconds = estimate_spoken_seconds(line.text, cps=cps, wps=wps)
 
     # 2. validate grounding — every line must reference at least one real clip
     for line in script.lines:

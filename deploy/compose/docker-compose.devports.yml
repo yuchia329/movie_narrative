@@ -1,0 +1,11 @@
+# Dev-only overlay: publish Postgres + Redis to the host so a NATIVELY-run app
+# (uvicorn + celery, for hot-reload) can reach the containerized infra. MinIO is
+# already published by the local overlay (9000/9001). Layer this on top of base+local:
+#   docker compose -p compose \
+#     -f docker-compose.base.yml -f docker-compose.local.yml -f docker-compose.devports.yml \
+#     up -d postgres redis
+services:
+  postgres:
+    ports: ["5432:5432"]
+  redis:
+    ports: ["6379:6379"]

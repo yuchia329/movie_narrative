@@ -1,0 +1,39 @@
+# OPTIONAL overlay — only if you do NOT already run Prometheus/Grafana/Loki.
+# The user has these; in that case skip this file and instead merge
+# deploy/prometheus/scrape.yml + deploy/promtail/promtail.yml into the existing stack.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["9090:9090"]
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:latest
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    ports: ["3100:3100"]
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:latest
+    command: ["-config.file=/etc/promtail/promtail.yml"]
+    volumes:
+      - ./promtail/promtail.yml:/etc/promtail/promtail.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on: [loki]
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus, loki]
+    restart: unless-stopped

@@ -1,0 +1,24 @@
+# Traefik (k3s default ingress) host-routing for recap.yuchia.dev. No TLS block and no
+# cert-manager: Cloudflare terminates TLS at the edge and proxies to this HTTP origin,
+# matching the other *.yuchia.dev services. The base nginx.ingress.* annotations are
+# removed (null) since Traefik ignores them and streams SSE fine by default.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jieshuo
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: null
+    nginx.ingress.kubernetes.io/proxy-buffering: null
+    nginx.ingress.kubernetes.io/proxy-read-timeout: null
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: recap.yuchia.dev
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port: {number: 80}

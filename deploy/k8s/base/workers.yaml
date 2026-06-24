@@ -1,0 +1,116 @@
+# Celery workers split by resource class + the beat scheduler. Each pod has its own
+# emptyDir WORK_ROOT cache; S3 is the source of truth, so a phase task on any pod
+# re-materializes what it needs (no shared RWX volume required). worker-asr and
+# worker-tts are separate (different GPUs -> they overlap) and each pinned to
+# replicas:1 / concurrency:1 because one model per GPU is serialized.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: worker-cpu, labels: {app: jieshuo, component: worker-cpu}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: jieshuo, component: worker-cpu}}
+  template:
+    metadata: {labels: {app: jieshuo, component: worker-cpu}}
+    spec:
+      containers:
+        - name: worker
+          image: jieshuoforge:latest
+          imagePullPolicy: IfNotPresent
+          command: ["celery", "-A", "jieshuoforge_web.tasks", "worker", "-Q", "cpu", "-n", "cpu@%h", "--concurrency", "2", "-l", "info"]
+          envFrom: [{configMapRef: {name: jieshuo-config}}, {secretRef: {name: jieshuo-secrets}}]
+          volumeMounts: [{name: work, mountPath: /scratch/work}]
+          resources: {requests: {cpu: "250m", memory: "512Mi"}, limits: {cpu: "2", memory: "2Gi"}}
+      volumes: [{name: work, emptyDir: {}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: worker-asr, labels: {app: jieshuo, component: worker-asr}}
+spec:
+  replicas: 1                         # one ASR model per GPU -> serialize
+  selector: {matchLabels: {app: jieshuo, component: worker-asr}}
+  template:
+    metadata: {labels: {app: jieshuo, component: worker-asr}}
+    spec:
+      containers:
+        - name: worker
+          image: jieshuoforge:latest
+          imagePullPolicy: IfNotPresent
+          command: ["celery", "-A", "jieshuoforge_web.tasks", "worker", "-Q", "asr", "-n", "asr@%h", "--concurrency", "3", "-l", "info"]
+          envFrom: [{configMapRef: {name: jieshuo-config}}, {secretRef: {name: jieshuo-secrets}}]
+          volumeMounts: [{name: work, mountPath: /scratch/work}]
+          resources: {requests: {cpu: "100m", memory: "512Mi"}, limits: {cpu: "1", memory: "2Gi"}}
+      volumes: [{name: work, emptyDir: {}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: worker-tts, labels: {app: jieshuo, component: worker-tts}}
+spec:
+  replicas: 1                         # one TTS model per GPU -> serialize (overlaps ASR)
+  selector: {matchLabels: {app: jieshuo, component: worker-tts}}
+  template:
+    metadata: {labels: {app: jieshuo, component: worker-tts}}
+    spec:
+      containers:
+        - name: worker
+          image: jieshuoforge:latest
+          imagePullPolicy: IfNotPresent
+          command: ["celery", "-A", "jieshuoforge_web.tasks", "worker", "-Q", "tts", "-n", "tts@%h", "--concurrency", "3", "-l", "info"]
+          envFrom: [{configMapRef: {name: jieshuo-config}}, {secretRef: {name: jieshuo-secrets}}]
+          volumeMounts: [{name: work, mountPath: /scratch/work}]
+          resources: {requests: {cpu: "100m", memory: "512Mi"}, limits: {cpu: "1", memory: "2Gi"}}
+      volumes: [{name: work, emptyDir: {}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: worker-llm, labels: {app: jieshuo, component: worker-llm}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: jieshuo, component: worker-llm}}
+  template:
+    metadata: {labels: {app: jieshuo, component: worker-llm}}
+    spec:
+      containers:
+        - name: worker
+          image: jieshuoforge:latest
+          imagePullPolicy: IfNotPresent
+          command: ["celery", "-A", "jieshuoforge_web.tasks", "worker", "-Q", "llm", "-n", "llm@%h", "--concurrency", "2", "-l", "info"]
+          envFrom: [{configMapRef: {name: jieshuo-config}}, {secretRef: {name: jieshuo-secrets}}]
+          volumeMounts: [{name: work, mountPath: /scratch/work}]
+          resources: {requests: {cpu: "100m", memory: "512Mi"}, limits: {cpu: "1", memory: "2Gi"}}
+      volumes: [{name: work, emptyDir: {}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: worker-render, labels: {app: jieshuo, component: worker-render}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: jieshuo, component: worker-render}}
+  template:
+    metadata: {labels: {app: jieshuo, component: worker-render}}
+    spec:
+      containers:
+        - name: worker
+          image: jieshuoforge:latest
+          imagePullPolicy: IfNotPresent
+          command: ["celery", "-A", "jieshuoforge_web.tasks", "worker", "-Q", "render", "-n", "render@%h", "--concurrency", "2", "-l", "info"]
+          envFrom: [{configMapRef: {name: jieshuo-config}}, {secretRef: {name: jieshuo-secrets}}]
+          volumeMounts: [{name: work, mountPath: /scratch/work}]
+          resources: {requests: {cpu: "500m", memory: "1Gi"}, limits: {cpu: "4", memory: "4Gi"}}
+      volumes: [{name: work, emptyDir: {}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: beat, labels: {app: jieshuo, component: beat}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: jieshuo, component: beat}}
+  template:
+    metadata: {labels: {app: jieshuo, component: beat}}
+    spec:
+      containers:
+        - name: beat
+          image: jieshuoforge:latest
+          imagePullPolicy: IfNotPresent
+          command: ["celery", "-A", "jieshuoforge_web.tasks", "beat", "-l", "info"]
+          envFrom: [{configMapRef: {name: jieshuo-config}}, {secretRef: {name: jieshuo-secrets}}]
+          resources: {requests: {cpu: "50m", memory: "128Mi"}, limits: {cpu: "250m", memory: "256Mi"}}

@@ -21,13 +21,14 @@ log = logging.getLogger("jieshuoforge.s06")
 
 
 def run_stage(
-    conn: sqlite3.Connection, client: LLMClient, *, target_sec: int, thinking: str | None = "adaptive"
+    conn: sqlite3.Connection, client: LLMClient, *, target_sec: int,
+    thinking: str | None = "adaptive", lang: str = "zh",
 ) -> Screenplay:
     source_blocks = s05_context.build_source_blocks(conn, include_images=client.vision, max_images=client.max_images)
     data, _usage = client.complete_structured(
-        system_text=prompts.build_system_text(),
+        system_text=prompts.build_system_text(lang),
         source_blocks=source_blocks,
-        instruction=prompts.map_instruction(target_sec),
+        instruction=prompts.map_instruction(target_sec, lang),
         schema=screenplay_json_schema(),
         thinking=thinking,
     )

@@ -1,0 +1,90 @@
+# LOCAL overlay: MinIO (S3-compatible) for files; everything wired to env/local.env.
+# Runs an in-compose `gpu-tunnel` sidecar (SSH -> the GPU box's gpud) so you no longer need to
+# run scripts/gpu_tunnel.sh on the host; workers reach gpud at gpu-tunnel:50050. extra_hosts
+# (host.docker.internal) is kept only for the host-script fallback.
+#   docker compose -f compose/docker-compose.base.yml -f compose/docker-compose.local.yml up -d --build
+
+x-localenv: &localenv
+  env_file:
+    - ../env/local.env                 # committed template / defaults
+    - path: ../env/local.env.mine      # your secrets + box targets (gitignored); overrides the above
+      required: false
+  extra_hosts: ["host.docker.internal:host-gateway"]
+
+services:
+  api:        { <<: *localenv }
+  worker-cpu: { <<: *localenv }
+  worker-asr: { <<: *localenv }
+  worker-tts: { <<: *localenv }
+  worker-llm: { <<: *localenv }
+  worker-render: { <<: *localenv }
+  beat:       { <<: *localenv }
+
+  # In-compose SSH tunnel to the GPU box's gpud — replaces running scripts/gpu_tunnel.sh on the
+  # host. Forwards gpud control (50050) + the on-demand instance pool (50060-50099) + gpud
+  # metrics (9050) from the box, bound on 0.0.0.0 so sibling containers reach them via the
+  # `gpu-tunnel` service name. Workers set GPU_SUPERVISOR_TARGET=gpu-tunnel:50050 (see local.env);
+  # gpud hands back a port in the range and gpu_supervisor rewrites the host to gpu-tunnel, so the
+  # worker dials gpu-tunnel:<port> (same forwarded host). Mirrors overlays/prod/gpu-tunnel.yaml.
+  # Box identity (GPU_HOST/GPU_USER/GPU_PORT) comes from the env_file (real values in
+  # local.env.mine); the SSH key is bind-mounted read-only from the host (never in the repo).
+  gpu-tunnel:
+    <<: *localenv                       # env_file -> GPU_HOST / GPU_USER / GPU_PORT
+    image: linuxserver/openssh-server:latest
+    entrypoint: ["/bin/sh", "-c"]       # override the image's s6 init; just run the ssh client
+    command:
+      - |
+        set -e
+        mkdir -p /root/.ssh && chmod 700 /root/.ssh
+        cp /ssh-key/id_key /root/.ssh/id_key && chmod 600 /root/.ssh/id_key
+        FLAGS="-i /root/.ssh/id_key -L 0.0.0.0:50050:localhost:50050 -L 0.0.0.0:9050:localhost:9050"
+        for p in $$(seq 50060 50099); do FLAGS="$$FLAGS -L 0.0.0.0:$$p:localhost:$$p"; done
+        while true; do
+          echo "[gpu-tunnel] connecting $${GPU_USER}@$${GPU_HOST}:$${GPU_PORT:-22} (gpud 50050 + pool 50060-50099 + metrics 9050)"
+          ssh -N \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+            -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile=/root/.ssh/known_hosts \
+            $$FLAGS -p "$${GPU_PORT:-22}" "$${GPU_USER}@$${GPU_HOST}" || true
+          echo "[gpu-tunnel] ssh exited — reconnecting in 5s"; sleep 5
+        done
+    volumes:
+      # Your key for the GPU box (matches `ssh nlp`'s IdentityFile). Copied to 0600 inside the
+      # container because ssh rejects a group/world-readable key. Edit the path if yours differs.
+      - "${HOME}/.ssh/nlp_ed25519:/ssh-key/id_key:ro"
+    restart: unless-stopped
+
+  # expose the app for the browser. !override REPLACES base's ports (80:80) instead of
+  # merging — otherwise compose appends and nginx also tries host :80, which is usually
+  # taken on a Mac ("address already in use"). Local serves only on :8080.
+  nginx:
+    ports: !override
+      - "8080:80"
+
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"    # S3 API — MUST match S3_PUBLIC_ENDPOINT_URL host for presigned URLs
+      - "9001:9001"    # MinIO console
+    volumes: [minio:/data]
+    restart: unless-stopped
+
+  # one-shot: create the bucket on startup
+  createbuckets:
+    image: minio/mc:latest
+    depends_on: [minio]
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 1; done;
+      mc mb -p local/jieshuo-artifacts || true;
+      mc anonymous set none local/jieshuo-artifacts || true;
+      echo 'bucket ready';
+      "
+    restart: "no"
+
+volumes:
+  minio:

@@ -1,0 +1,42 @@
+groups:
+  - name: jieshuo
+    rules:
+      - alert: LLMBudgetNearlyExhausted
+        # The $3 cap is the real guard — page before it's gone.
+        expr: jieshuo_llm_budget_remaining_usd <= 0.2 * jieshuo_llm_budget_cap_usd
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "LLM credit ≤20% remaining"
+          description: "${{ $value }} USD left of the MiniMax cap. New runs will be refused at $0."
+
+      - alert: GPUServiceDown
+        expr: jieshuo_gpu_service_up == 0 or up{job="jieshuo-gpu-services"} == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "GPU service down ({{ $labels.service }}{{ $labels.instance }})"
+          description: "ASR/TTS unreachable — back/front halves will fail. Check the WireGuard link."
+
+      - alert: DiskFillingUp
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) < 0.10
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Control-plane disk <10% free"
+          description: "Render scratch + working cache fill disk. The reaper should prune; check the work volume."
+
+      - alert: QueueBacklogGrowing
+        expr: jieshuo_queue_depth > 10
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Celery queue {{ $labels.queue }} backed up ({{ $value }} pending)"
+          description: "Tasks queueing faster than workers drain them — likely the gpu queue (serialized)."
+
+      - alert: RunFailureSpike
+        expr: increase(jieshuo_stage_failures_total[15m]) > 3
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "Multiple stage failures in 15m"

@@ -8,6 +8,7 @@ __pycache__/
 
 # env / secrets
 .env
+*.mine                 # deploy/env/*.env.mine — filled local/prod secrets + box targets
 
 # working data (large, regenerable)
 artifacts/

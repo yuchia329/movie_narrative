@@ -1,0 +1,28 @@
+# Copy to terraform.tfvars (gitignored) and fill in. Secrets can also be passed as
+# TF_VAR_* environment variables instead of living in this file.
+
+kubeconfig_path = "~/.kube/recap-k3s.yaml"   # points at the k3s API (via the ssh -L 6443 tunnel)
+image_tag       = "latest"                   # set to the git sha you built with build_and_load.sh
+
+# AWS (creds come from the AWS_* env / profile, NOT here)
+aws_region              = "us-east-1"
+s3_bucket               = "recap-artifacts-prod"
+artifact_retention_days = 30
+
+# Cloudflare (yuchia.dev)
+cloudflare_api_token = "cf-token-with-dns-edit"
+cloudflare_zone_id   = "your-yuchia-dev-zone-id"
+ec2_public_ip        = "34.195.244.172"
+
+# App secrets
+llm_api_key       = "sk-..."
+session_secret    = "a-long-random-string"
+postgres_password = "a-strong-password"
+
+# SSH private key for the GPU box (same key video-search uses). Prefer:
+#   export TF_VAR_gpu_ssh_private_key="$(cat ~/.ssh/gpu_id_rsa)"
+gpu_ssh_private_key = <<-EOT
+-----BEGIN OPENSSH PRIVATE KEY-----
+...
+-----END OPENSSH PRIVATE KEY-----
+EOT

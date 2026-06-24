@@ -17,6 +17,7 @@ import base64
 import json
 import logging
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from openai import OpenAI
@@ -57,6 +58,8 @@ class LLMClient:
         vision: bool = True,
         max_images: int = 180,
         timeout: float = 1800.0,
+        default_pre_request_hook: Callable[[], None] | None = None,
+        default_on_usage: Callable[[object], None] | None = None,
     ):
         # Generous timeout: MiniMax-M3 is a reasoning model and the REDUCE pass can
         # take many minutes to generate a full script (the SDK's 600s default times out).
@@ -67,6 +70,10 @@ class LLMClient:
         self.max_retries = max_retries
         self.vision = vision  # whether the model accepts keyframe images
         self.max_images = max_images  # provider cap (MiniMax ≤200 images/request)
+        # Optional cost-control hooks applied to every call (the platform wires the
+        # budget guard here; the CLI leaves them None). Per-call args override these.
+        self.default_pre_request_hook = default_pre_request_hook
+        self.default_on_usage = default_on_usage
 
     def complete_structured(
         self,
@@ -76,6 +83,8 @@ class LLMClient:
         instruction: str,
         schema: dict,
         thinking: str | None = None,
+        pre_request_hook: Callable[[], None] | None = None,
+        on_usage: Callable[[object], None] | None = None,
     ) -> tuple[dict, object]:
         """Run one structured pass; return (parsed_json, usage).
 
@@ -85,7 +94,16 @@ class LLMClient:
         ``"adaptive"`` / ``"disabled"``) controls MiniMax-M3 reasoning — disabling it
         on the REDUCE pass frees the output budget the model would otherwise spend on
         ``<think>`` for actual narration.
+
+        Cost control (used by the platform; ``None`` for the CLI): ``pre_request_hook``
+        is called once before the API request and may raise to abort when the spend cap
+        is reached; ``on_usage`` is called with the response ``usage`` after a
+        successful call so the caller can record tokens/cost.
         """
+        pre_request_hook = pre_request_hook or self.default_pre_request_hook
+        on_usage = on_usage or self.default_on_usage
+        if pre_request_hook is not None:
+            pre_request_hook()
         user_content = [*source_blocks, text_block(instruction + _schema_directive(schema))]
         messages = [
             {"role": "system", "content": system_text},
@@ -117,6 +135,8 @@ class LLMClient:
                     "llm: in=%s out=%s (attempt %d)",
                     getattr(u, "prompt_tokens", "?"), getattr(u, "completion_tokens", "?"), attempt + 1,
                 )
+                if on_usage is not None:
+                    on_usage(u)
                 return data, u
             except json.JSONDecodeError as e:  # nudge the model to fix its JSON and retry
                 last_err = e
