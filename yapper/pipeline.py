@@ -473,6 +473,21 @@ def run_back_half(
 
     # s11 subtitles --------------------------------------------------------
     scfg = cfg.section("subtitles")
+    # [subtitles].font_size/margin_v are absolute pixels defined against a 1080-tall reference
+    # frame. Since fit_output_dims (above) now sizes the output to the source and never upscales,
+    # a low-res clip (e.g. 854x368) would otherwise get giant captions (48px = 13% of height) and
+    # a tall portrait tiny ones. Scale both by output_height/1080 so the on-screen proportion is
+    # constant (the look from when every output was 1080-tall).
+    _cap_scale = rcfg["height"] / 1080.0
+    _font_px = max(12, round(int(scfg.get("font_size", 48)) * _cap_scale))
+    _margin_px = max(8, round(int(scfg.get("margin_v", 60)) * _cap_scale))
+    if _cap_scale != 1.0:
+        log.info(
+            "[subs] caption scaled to %dx%d output: font %d->%d, margin_v %d->%d",
+            rcfg["width"], rcfg["height"],
+            int(scfg.get("font_size", 48)), _font_px,
+            int(scfg.get("margin_v", 60)), _margin_px,
+        )
     with timer.stage("subs"):
         # Global .ass written as a downloadable sidecar; the burn-in itself is now per-segment
         # in s12 (built from the same [subtitles] style), so the return value isn't needed here.
@@ -482,8 +497,8 @@ def run_back_half(
             width=rcfg["width"],
             height=rcfg["height"],
             font_name=scfg.get("font_name", "Noto Sans CJK SC"),
-            font_size=int(scfg.get("font_size", 48)),
-            margin_v=int(scfg.get("margin_v", 60)),
+            font_size=_font_px,
+            margin_v=_margin_px,
         )
     if _stop("subs"):
         return bdir
@@ -522,8 +537,8 @@ def run_back_half(
             # sidecar artifact); fonts dir carries the bundled CJK font.
             subtitle_style={
                 "font_name": scfg.get("font_name", "Noto Sans CJK SC"),
-                "font_size": int(scfg.get("font_size", 48)),
-                "margin_v": int(scfg.get("margin_v", 60)),
+                "font_size": _font_px,      # height-scaled (see s11 above) so burn-in matches the sidecar .ass
+                "margin_v": _margin_px,
             },
             fonts_dir=cfg.repo_root / "config" / "fonts",
             score_stem=score_stem,

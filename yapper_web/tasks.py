@@ -436,6 +436,66 @@ def mark_ready(movie_id: str) -> str:
 # ===========================================================================
 # BACK HALF — bh_script (llm) -> bh_tts (gpu) -> bh_render (render) -> finalize
 # ===========================================================================
+# --- chain control: remember a run's task ids so it can be stopped mid-flight --------------
+def _run_tasks_key(run_id: str) -> str:
+    return f"run:tasks:{run_id}"
+
+
+def _remember_chain(run_id: str, res) -> None:
+    """Record every task id in a freshly-dispatched chain so the run can be revoked later. A
+    chain's AsyncResult points at the LAST task; ``.parent`` walks back to the first. Kept in Redis
+    (not the DB) keyed by run_id, with a TTL past any real run (matches the broker visibility_timeout)."""
+    ids, node = [], res
+    while node is not None:
+        ids.append(node.id)
+        node = node.parent
+    try:
+        _redis.set(_run_tasks_key(run_id), json.dumps(ids), ex=21600)  # 6h
+    except Exception:  # noqa: BLE001 — terminate is best-effort; never fail dispatch on this
+        log.warning("could not record chain ids for run %s", run_id, exc_info=True)
+
+
+def revoke_run(run_id: str) -> bool:
+    """Stop any in-flight back-half chain for ``run_id``: revoke the running task (SIGTERM kills it
+    mid-stage on the prefork pool) plus the queued downstream tasks, so the chain can't continue.
+    Returns True if task ids were on record. Best-effort and idempotent — safe to call repeatedly."""
+    try:
+        raw = _redis.get(_run_tasks_key(run_id))
+    except Exception:  # noqa: BLE001
+        raw = None
+    ids = json.loads(raw) if raw else []
+    for tid in ids:
+        try:
+            app.control.revoke(tid, terminate=True, signal="SIGTERM")
+        except Exception:  # noqa: BLE001 — revoke is a broker broadcast; tolerate hiccups
+            log.warning("revoke failed for task %s (run %s)", tid, run_id, exc_info=True)
+    try:
+        _redis.delete(_run_tasks_key(run_id))
+    except Exception:  # noqa: BLE001
+        pass
+    return bool(ids)
+
+
+def _fail_run(task, run_id: str, exc: Exception) -> None:
+    """Record a back-half failure — UNLESS this task was superseded by a regenerate. A regenerate
+    rewrites the run's task-id set (new chain), so an old task killed mid-stage finding its own id
+    gone must NOT flip the run to error: that would wrongly stop the fresh chain and prematurely
+    close the UI's event stream. Best-effort: on a missing/unreadable record we record as normal, so
+    a genuine failure (or a terminate, which already set the status) is never silently swallowed."""
+    tid = getattr(task.request, "id", None)
+    superseded = False
+    try:
+        raw = _redis.get(_run_tasks_key(run_id))
+        if raw is not None and tid is not None:
+            superseded = tid not in json.loads(raw)
+    except Exception:  # noqa: BLE001 — never let the guard hide a real failure
+        superseded = False
+    if superseded:
+        log.info("suppressing stale failure for run %s (task %s superseded by regenerate)", run_id, tid)
+        return
+    _fail(Run, run_id, exc)
+
+
 def start_back_half(run_id: str) -> str:
     init_db()
     res = chain(
@@ -444,6 +504,7 @@ def start_back_half(run_id: str) -> str:
         bh_render.si(run_id),
         finalize_run.si(run_id),
     ).apply_async()
+    _remember_chain(run_id, res)   # record task ids so the run can be stopped mid-flight
     return res.id
 
 
@@ -479,7 +540,7 @@ def bh_script(self, run_id: str) -> str:
             run.llm_tokens_out = guard.tokens_out
             run.llm_cost_usd = guard.cost_usd
     except Exception as exc:  # noqa: BLE001
-        _fail(Run, run_id, exc)
+        _fail_run(self, run_id, exc)
         raise
     return run_id
 
@@ -524,7 +585,7 @@ def bh_tts(self, run_id: str) -> str:
             )
         _persist(store, cfg, movie_path, prefix)
     except Exception as exc:  # noqa: BLE001
-        _fail(Run, run_id, exc)
+        _fail_run(self, run_id, exc)
         raise
     return run_id
 
@@ -547,7 +608,7 @@ def bh_render(self, run_id: str) -> str:
         with session_scope() as db:
             db.get(Run, run_id).output_key = out_key
     except Exception as exc:  # noqa: BLE001
-        _fail(Run, run_id, exc)
+        _fail_run(self, run_id, exc)
         raise
     return run_id
 

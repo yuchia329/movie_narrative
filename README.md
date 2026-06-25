@@ -5,20 +5,9 @@ Turn any video into a punchy Mandarin **funny-commentary** track in the Douyin/K
 story _and_ riffs on it. Works on full-length **movies** (a ~10–12 min funny recap) and
 short **clips** like vlogs (a 1–3 min riff). English (YouTube-style) commentary is supported too.
 
-🔗 **[Live demo → yapper.yuchia.dev](https://yapper.yuchia.dev)**  · 
-📊 **[Grafana dashboard](https://grafana.yuchia.dev/d/yapper-overview/yapper-c2b7-overview?orgId=1&from=now-24h&to=now&timezone=America%2FLos_Angeles&var-datasource=prometheus&refresh=auto)**
-
----
-
-## Demo
-
-<p align="center">
-  <video src="docs/demo-clip.mp4" alt="Video">
-</p>
-
-**[Demo output on YouTube](https://youtu.be/LF0VHx4xo_8)**
-
----
+🔗 **[Live demo](https://yapper.yuchia.dev)**  · 
+📊 **[Grafana dashboard](https://grafana.yuchia.dev/d/yapper-overview/yapper-c2b7-overview?orgId=1&from=now-24h&to=now&timezone=America%2FLos_Angeles&var-datasource=prometheus&refresh=auto)** ·
+🎬 **[Demo output on YouTube](https://youtu.be/LF0VHx4xo_8)**
 
 ## How it works
 

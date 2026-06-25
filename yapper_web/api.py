@@ -14,6 +14,7 @@ import json
 import logging
 import time
 from contextlib import asynccontextmanager
+from datetime import timezone
 from pathlib import Path
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Response
@@ -36,6 +37,7 @@ from .db import (
     Run,
     RunStage,
     RunStatus,
+    _now,
     init_db,
     session_scope,
     stage_avg_seconds,
@@ -367,7 +369,7 @@ def list_movie_runs(movie_id: str, sid: str = SessionId):
 # ---------------------------------------------------------------------------
 @app.post("/api/runs")
 def create_run(body: CreateRun, sid: str = SessionId):
-    from .tasks import clear_back_half_artifacts, start_back_half
+    from .tasks import clear_back_half_artifacts, revoke_run, start_back_half
 
     lang = body.lang.lower()
     if lang not in SUPPORTED_LANGS:
@@ -393,15 +395,23 @@ def create_run(body: CreateRun, sid: str = SessionId):
             and not body.force
         ):
             return _run_view(existing)
-        # per-session concurrency cap (a finished run being regenerated doesn't count as active)
-        active = (
-            db.query(Run)
-            .filter(
-                Run.session_id == sid,
-                Run.status.in_([RunStatus.queued, RunStatus.running]),
-            )
-            .count()
+        # Regenerating an IN-FLIGHT run (force + queued/running): the old Celery chain must be
+        # stopped first, or it keeps writing stage rows / artifacts beside the fresh chain. Flag it
+        # here; the actual revoke happens after the txn (it's a broker broadcast, not a DB op).
+        revoke_inflight = (
+            existing is not None
+            and body.force
+            and existing.status in (RunStatus.queued, RunStatus.running)
         )
+        # per-session concurrency cap — the run we're regenerating is about to be replaced, so it
+        # never counts against the cap (a finished run being regenerated, or an in-flight one we stop).
+        active_q = db.query(Run).filter(
+            Run.session_id == sid,
+            Run.status.in_([RunStatus.queued, RunStatus.running]),
+        )
+        if existing is not None:
+            active_q = active_q.filter(Run.id != existing.id)
+        active = active_q.count()
         if active >= S.max_concurrent_runs_per_session:
             raise HTTPException(
                 429, f"too many concurrent runs ({S.max_concurrent_runs_per_session})"
@@ -423,8 +433,18 @@ def create_run(body: CreateRun, sid: str = SessionId):
             run.error = None
             run.output_key = None
             run.output_duration_sec = None
+            if body.force:
+                # Full regenerate recomputes every back-half stage from scratch (artifacts are
+                # wiped below), so drop the old per-stage rows too — otherwise stale 'ran' pills
+                # linger, and a still-'running' one (regenerating an in-flight run) would keep
+                # ticking forever instead of the fresh chain showing real progress from step 1.
+                db.query(RunStage).filter(RunStage.run_id == run.id).delete()
         db.flush()
         rid = run.id
+    # Stop the old in-flight chain BEFORE clearing artifacts / starting the fresh one, so the
+    # dying task can't keep writing into the working dir we're about to wipe.
+    if revoke_inflight:
+        revoke_run(rid)
     # Regenerate: drop the cached back-half artifacts for this (movie, lang) so the chain
     # recomputes a FRESH recap rather than returning the old one. The shared front-half cache is
     # left intact (ASR/scenes aren't redone). Must happen before the chain re-materializes from S3.
@@ -528,6 +548,43 @@ def retry_movie(movie_id: str, body: RetryMovie, sid: str = SessionId):
         rid = run.id
     start_back_half(rid)  # no artifact clearing -> the pipeline resumes at the failed back-half stage
     return {"ok": True, "mode": "resume", "scope": "back", "run_id": rid}
+
+
+@app.post("/api/runs/{run_id}/terminate")
+def terminate_run(run_id: str, sid: str = SessionId):
+    """Stop an in-flight back-half run NOW. Kills the running stage (e.g. a stuck TTS) and cancels
+    the queued downstream stages, then marks the run errored ("Stopped by user") so the usual
+    Resume / Start over / Regenerate actions stay available. 409 if the run isn't active."""
+    from .tasks import revoke_run
+
+    with session_scope() as db:
+        run = db.get(Run, run_id)
+        if run is None or run.session_id != sid:
+            raise HTTPException(404, "run not found")
+        if run.status not in (RunStatus.queued, RunStatus.running):
+            raise HTTPException(409, f"run is not active (status={run.status.value})")
+    # revoke outside the txn — it's a broker broadcast, not a DB op
+    revoke_run(run_id)
+    with session_scope() as db:
+        run = db.get(Run, run_id)
+        # The killed task may also flip this to error on its own; set it here so the UI reflects the
+        # stop immediately with a clear reason (not a raw Terminated trace), mirroring the _fail path.
+        run.status = RunStatus.error
+        run.error = "Stopped by user"
+        # Close out the stage that was mid-flight (e.g. a stuck tts) — otherwise the UI keeps rendering
+        # it as a live, forever-ticking "running" pill. Freeze its elapsed and mark it errored.
+        now = _now()
+        for st in run.stages:
+            if st.status == "running":
+                rec = st.recorded_at
+                if rec is not None:
+                    # SQLite hands back naive datetimes; treat them as the UTC _now() wrote.
+                    if rec.tzinfo is None:
+                        rec = rec.replace(tzinfo=timezone.utc)
+                    st.seconds = max(float(st.seconds or 0.0), (now - rec).total_seconds())
+                st.status = "error"
+                st.recorded_at = now
+        return _run_view(run, run.stages)
 
 
 def _fetch_run(run_id: str, sid: str) -> dict:

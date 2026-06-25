@@ -31,11 +31,15 @@ from _metrics import ASR_SEGMENTS, MetricsInterceptor, start_metrics_server
 MODEL = os.environ.get("ASR_MODEL", "large-v3")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 COMPUTE = os.environ.get("ASR_COMPUTE", "float16" if DEVICE == "cuda" else "float32")
+# Batched-inference size: higher = faster on a big GPU (a 24GB 3090 has ample headroom,
+# especially with large-v3-turbo). Tune via ASR_BATCH_SIZE; 16 is the conservative default.
+BATCH_SIZE = int(os.environ.get("ASR_BATCH_SIZE", "16"))
 HF_TOKEN = os.environ.get("HF_TOKEN")
 PORT = int(os.environ.get("ASR_GRPC_PORT", "50051"))
 METRICS_PORT = int(os.environ.get("ASR_METRICS_PORT", "9101"))
 
 _model = None
+_align_cache: dict[str, tuple] = {}  # language_code -> (align_model, metadata); wav2vec2 is reused
 _gpu_lock = threading.Lock()  # one model on one GPU: never run two transcriptions at once
 
 
@@ -44,6 +48,16 @@ def get_model():
     if _model is None:
         _model = whisperx.load_model(MODEL, device=DEVICE, compute_type=COMPUTE)
     return _model
+
+
+def get_align_model(lang: str):
+    """Load (once per language) and cache the forced-alignment model. Reloading it on every
+    request — as the service used to — re-reads the wav2vec2 weights each transcription."""
+    cached = _align_cache.get(lang)
+    if cached is None:
+        cached = whisperx.load_align_model(language_code=lang, device=DEVICE)
+        _align_cache[lang] = cached
+    return cached
 
 
 class AsrServicer(asr_pb2_grpc.AsrServicer):
@@ -64,12 +78,12 @@ class AsrServicer(asr_pb2_grpc.AsrServicer):
             with _gpu_lock:
                 audio = whisperx.load_audio(path)
                 language = cfg.language or None
-                result = get_model().transcribe(audio, batch_size=16, language=language)
+                result = get_model().transcribe(audio, batch_size=BATCH_SIZE, language=language)
                 lang = result["language"]
 
                 # word-level timestamps via forced alignment (essential for clip cuts/subs)
                 try:
-                    model_a, metadata = whisperx.load_align_model(language_code=lang, device=DEVICE)
+                    model_a, metadata = get_align_model(lang)
                     result = whisperx.align(
                         result["segments"], model_a, metadata, audio, DEVICE, return_char_alignments=False
                     )

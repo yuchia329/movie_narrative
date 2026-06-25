@@ -313,21 +313,18 @@
       font-size: 12px;
     }
 
-    /* finished-run stage track collapse */
+    /* run stage track: always open (back-half stages stay expanded, summary is just a label) */
     .run-track>summary {
-      cursor: pointer;
+      cursor: default;
+      pointer-events: none;
       list-style: none;
       font-size: 11px;
-      color: var(--mut);
+      color: var(--fg);
       padding: 2px 0;
     }
 
     .run-track>summary::-webkit-details-marker {
       display: none;
-    }
-
-    .run-track[open]>summary {
-      color: var(--fg);
     }
 
     .run-track .track {
@@ -376,6 +373,14 @@
 
     button.ghost:hover {
       border-color: var(--acc);
+    }
+
+    button.ghost.danger {
+      color: var(--err);
+    }
+
+    button.ghost.danger:hover {
+      border-color: var(--err);
     }
 
     select,
@@ -897,8 +902,9 @@
     const streaming = new Set();  // run ids with an open SSE
 
     async function makeRun(movieId, lang, force = false) {
-      // force=true regenerates fresh commentary even if this language is already done.
-      if (force && !confirm(`Regenerate the ${lang} commentary from scratch? This replaces the current one.`)) return;
+      // force=true regenerates fresh commentary even if this language is already done OR still
+      // running — the backend stops any in-flight run for this language before starting the new one.
+      if (force && !confirm(`Regenerate the ${lang} commentary from scratch? This stops any generation in progress and replaces the current one.`)) return;
       try {
         await api("/api/runs", {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -908,12 +914,22 @@
       } catch (e) { alert("could not start: " + e); }
     }
 
+    // Stop an in-flight run immediately: interrupts the current stage (e.g. a stuck TTS) and cancels
+    // the rest. The run is marked stopped; Resume / Start over / Regenerate stay available afterward.
+    async function terminateRun(runId) {
+      if (!confirm("Stop this run now? The current stage is interrupted. You can resume or regenerate it afterward.")) return;
+      try {
+        const r = await api(`/api/runs/${runId}/terminate`, { method: "POST" });
+        renderRunInfo(r);   // reflect the stopped state at once (the open SSE then closes on its own)
+      } catch (e) { alert("could not stop: " + (e.message || e)); }
+    }
+
     // Recover a pipeline that stopped on a stage error (no re-upload):
     //   mode="resume"  -> continue from the failed stage (reuses every cached artifact before it)
     //   mode="restart" -> wipe all artifacts and re-run from the first stage (keeps the upload)
     async function retryMovie(movieId, mode, lang) {
       if (mode === "restart" &&
-          !confirm("Start over from the first stage? This re-runs the whole pipeline (re-analysis included). Your upload is kept — no re-upload needed.")) return;
+        !confirm("Start over from the first stage? This re-runs the whole pipeline (re-analysis included). Your upload is kept — no re-upload needed.")) return;
       try {
         await api(`/api/movies/${movieId}/retry`, {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -962,6 +978,12 @@
         actionBtns =
           `<button class="ghost" onclick="retryMovie('${r.movie_id}','resume','${r.lang}')" title="Continue from the failed stage (reuses everything done so far)">▶ Resume</button>` +
           `<button class="ghost" onclick="retryMovie('${r.movie_id}','restart','${r.lang}')" title="Re-run the whole pipeline from the first stage (keeps your upload)">↻ Start over</button>`;
+      } else if (r.status === "running" || r.status === "queued") {
+        // A stuck/slow run can be stopped on demand: Regenerate kills it and starts fresh; Terminate
+        // just stops it (it then shows as stopped, with Resume / Start over / Regenerate available).
+        actionBtns =
+          `<button class="ghost" onclick="makeRun('${r.movie_id}','${r.lang}',true)" title="Stop this run and regenerate fresh ${r.lang} commentary from scratch">↻ Regenerate</button>` +
+          `<button class="ghost danger" onclick="terminateRun('${r.id}')" title="Stop this run now — interrupts the current stage">■ Terminate</button>`;
       }
       const parts = [];
       if (r.llm_tokens_in || r.llm_tokens_out) parts.push(`${fmtTokens(r.llm_tokens_in)} in / ${fmtTokens(r.llm_tokens_out)} out`);
@@ -973,7 +995,7 @@
     </div>
     ${r.error ? `<div class="muted" style="color:var(--err)">${r.error}</div>` : ""}
     <div class="progress-line">${progressLine(r.all_stages, r.stages, r.status, r.estimated_remaining_sec)}</div>
-    <details class="run-track"${(r.status === "done" || r.status === "error") ? "" : " open"}>
+    <details class="run-track" open>
       <summary>${trackSummary(r.all_stages, r.stages)}</summary>
       <div class="track">${trackHtml(r.all_stages, r.stages, r.now, r.stage_kinds)}</div>
     </details>`;

@@ -94,8 +94,8 @@ workers = 1                   # parallel TTS requests; the single TTS GPU serial
 # zero-shot: point reference_clip at an ENGLISH reference clip ON the GPU server + its transcript.
 # Leave empty to let the TTS server fall back to its own default voice.
 [tts.en]
-reference_clip = ""
-reference_text = ""
+reference_clip = "/home/ychan137/jieshuo/voices/narrator_ref.en.wav"   # path ON the GPU server (auto-extracted from "The Death of Robin Hood - Movie Review" YouTube commentary)
+reference_text = "This movie kind of made me feel like that. This is just apparently a story that's far more interesting in concept than execution. Everything good about this movie was in the first half. Wait for it to come out on streaming, watch the first half, then stop. I don't really use that rating that much, but"
 
 [audio]
 # Under narration, play the film's OWN score/SFX as a bed (dialogue stripped via Demucs,
