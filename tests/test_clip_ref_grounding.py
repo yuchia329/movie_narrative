@@ -3,9 +3,9 @@ rejected before they can reach the editor."""
 
 import pytest
 
-from jieshuoforge import db
-from jieshuoforge.schemas import Clip, Script, ScriptLine
-from jieshuoforge.stages import s08_budget
+from yapper import db
+from yapper.schemas import Clip, Script, ScriptLine
+from yapper.stages import s08_budget
 
 
 def make_conn():

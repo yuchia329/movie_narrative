@@ -1,9 +1,9 @@
 """Runtime budget is enforced in code (structured outputs can't constrain length)."""
 
-from jieshuoforge import db
-from jieshuoforge.schemas import Clip, Script, ScriptLine
-from jieshuoforge.stages import s08_budget
-from jieshuoforge.textutil import estimate_spoken_seconds
+from yapper import db
+from yapper.schemas import Clip, Script, ScriptLine
+from yapper.stages import s08_budget
+from yapper.textutil import estimate_spoken_seconds
 
 
 def _conn():

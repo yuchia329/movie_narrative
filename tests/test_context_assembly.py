@@ -5,9 +5,9 @@ from pathlib import Path
 
 from PIL import Image
 
-from jieshuoforge import db
-from jieshuoforge.schemas import Clip, Keyframe
-from jieshuoforge.stages import s05_context
+from yapper import db
+from yapper.schemas import Clip, Keyframe
+from yapper.stages import s05_context
 
 
 def _tiny_jpg(path: Path) -> str:

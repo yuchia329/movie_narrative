@@ -2,9 +2,9 @@
 action and compress talky exposition. The signal is derived on the fly from data
 already on each clip (shot cut-rate + dialogue density) — no schema/db change."""
 
-from jieshuoforge import db
-from jieshuoforge.schemas import Clip
-from jieshuoforge.stages import s05_context
+from yapper import db
+from yapper.schemas import Clip
+from yapper.stages import s05_context
 
 
 def _conn_with(clips):

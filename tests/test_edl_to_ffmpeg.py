@@ -3,9 +3,9 @@ the conform + ducking semantics."""
 
 from pathlib import Path
 
-from jieshuoforge import db
-from jieshuoforge.ffmpeg import graph
-from jieshuoforge.schemas import (
+from yapper import db
+from yapper.ffmpeg import graph
+from yapper.schemas import (
     Clip,
     Script,
     ScriptLine,
@@ -14,7 +14,7 @@ from jieshuoforge.schemas import (
     VOLine,
     VOManifest,
 )
-from jieshuoforge.stages import s10_edl
+from yapper.stages import s10_edl
 
 
 def _setup():
@@ -103,9 +103,35 @@ def test_multi_clip_line_splits_into_montage_segments():
     assert abs(edl.total_duration - 10.3) < 1e-3             # total screen time conserved
 
 
-def test_concat_uses_stream_copy():
-    cmd = graph.concat_cmd(Path("/tmp/list.txt"), Path("/tmp/out.mp4"))
-    assert "-c" in cmd and cmd[cmd.index("-c") + 1] == "copy"
+def test_concat_copies_video_but_reencodes_audio_continuously():
+    # video stream-copied (fast, lossless); audio RE-ENCODED as one continuous stream so
+    # per-segment AAC priming doesn't click at each boundary.
+    cmd = graph.concat_cmd(Path("/tmp/list.txt"), Path("/tmp/out.mp4"), audio_rate=48000)
+    assert cmd[cmd.index("-c:v") + 1] == "copy"
+    assert cmd[cmd.index("-c:a") + 1] == "aac"
+    assert cmd[cmd.index("-ar") + 1] == "48000"
+    assert "-c" not in cmd  # not a blanket stream-copy anymore
+
+
+def test_segment_burns_subtitles_into_video_chain_when_ass_given():
+    conn, script, vo = _setup()
+    edl = s10_edl.run_stage(script, vo, conn, fps=30, width=1920, height=1080)
+    cmd = graph.normalize_segment_cmd(
+        "/movie.mkv", edl.segments[0], Path("/tmp/seg.mp4"),
+        width=1920, height=1080, fps=30, vcodec="libx264", pix_fmt="yuv420p",
+        audio_rate=48000, ducking={"threshold": 0.03, "ratio": 8, "attack": 5, "release": 300},
+        ass_path="/tmp/subs/seg_000.ass", fonts_dir="/fonts",
+    )
+    fc = cmd[cmd.index("-filter_complex") + 1]
+    assert "subtitles=" in fc                    # burned in during the per-segment encode
+    assert "fontsdir=" in fc                      # bundled CJK font dir passed through
+    assert fc.count("[v]") == 1                    # still one video output label
+    # without ass_path, no subtitles filter is added (regression: old behaviour unchanged)
+    cmd2 = graph.normalize_segment_cmd(
+        "/movie.mkv", edl.segments[0], Path("/tmp/seg.mp4"),
+        width=1920, height=1080, fps=30, vcodec="libx264", pix_fmt="yuv420p", audio_rate=48000, ducking={},
+    )
+    assert "subtitles=" not in cmd2[cmd2.index("-filter_complex") + 1]
 
 
 def test_playback_line_grounds_window_to_quote_transcript_span():
